@@ -3,7 +3,7 @@ import { Link, useSearchParams } from "react-router-dom";
 import { Sparkles, Copy, Check, SlidersHorizontal, Code, Scale } from "lucide-react";
 import CadViewport from "../components/CadViewport.jsx";
 
-const API = import.meta.env.VITE_API_URL || "https://nutbolt-backend.onrender.com";
+const API = "https://nutbolt-backend.onrender.com";
 const DENSITY = [
   ["Aluminum 6061-T6", 2.70],
   ["Titanium Grade 5", 4.43],
