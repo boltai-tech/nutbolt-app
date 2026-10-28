@@ -3,6 +3,7 @@ import re
 import ast
 import requests
 import cadquery as cq
+from cadquery import exporters
 
 SYSTEM_PROMPT = """You are a Principal Computational CAD & Mechanical Design Engineer specializing in OpenCASCADE and CadQuery Python.
 Translate natural language specifications into a valid, watertight, single-body manifold CadQuery 3D model.
@@ -43,17 +44,57 @@ def extract_params_from_code(code_str: str) -> dict:
         print(f"[AST Parse Warning]: {e}")
     return {}
 
+def inject_params(code_str: str, new_params: dict) -> str:
+    pattern = r"params\s*=\s*\{[^\}]*\}"
+    formatted = "params = {\n" + ",\n".join(f'    "{k}": {v}' for k, v in new_params.items()) + "\n}"
+    return re.sub(pattern, formatted, code_str, count=1)
+
 def validate_and_compile(code_str: str) -> bool:
     exec_scope = {"cq": cq}
     try:
         exec(code_str, exec_scope)
         res = exec_scope.get("result")
-        if res is not None:
-            return True
-        return False
+        return res is not None
     except Exception as e:
         print(f"[CadQuery Compilation Error]: {e}")
         return False
+
+def compile_to_files(code_str: str, session_id: str):
+    exec_scope = {"cq": cq}
+    try:
+        exec(code_str, exec_scope)
+        res = exec_scope.get("result")
+        if res is None:
+            return None, None, None
+
+        out_dir = os.path.join("assets", session_id)
+        os.makedirs(out_dir, exist_ok=True)
+
+        stl_path = os.path.join(out_dir, "part.stl")
+        step_path = os.path.join(out_dir, "part.step")
+
+        exporters.export(res, stl_path, exporters.ExportTypes.STL, tolerance=0.1, angularTolerance=0.1)
+        exporters.export(res, step_path, exporters.ExportTypes.STEP)
+
+        # Telemetry calculations
+        val = res.val()
+        vol_cm3 = round(val.Volume() / 1000.0, 3)
+        bbox = val.BoundingBox()
+        bbox_dims = [
+            round(bbox.xlen, 2),
+            round(bbox.ylen, 2),
+            round(bbox.zlen, 2)
+        ]
+
+        telemetry = {
+            "volume_cm3": vol_cm3,
+            "bbox_mm": bbox_dims
+        }
+
+        return stl_path, step_path, telemetry
+    except Exception as e:
+        print(f"[Compile Export Error]: {e}")
+        return None, None, None
 
 def fallback_generator(prompt: str) -> str:
     return """params = {
@@ -89,23 +130,23 @@ def call_gemini(prompt: str) -> str:
     }
 
     active_models = [
-        "gemini-2.5-pro",
         "gemini-2.5-flash",
-        "gemini-1.5-pro",
-        "gemini-1.5-flash"
+        "gemini-2.0-flash",
+        "gemini-1.5-flash",
+        "gemini-1.5-flash-latest"
     ]
 
     for model in active_models:
         clean_model = model.replace("models/", "")
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{clean_model}:generateContent?key={key}"
 
-        for attempt in range(2):
+        for _ in range(2):
             try:
                 resp = requests.post(
                     url,
                     headers={"Content-Type": "application/json"},
                     json=payload,
-                    timeout=45
+                    timeout=30
                 )
 
                 if resp.status_code == 200:
@@ -122,7 +163,7 @@ def call_gemini(prompt: str) -> str:
                     else:
                         print(f"[{clean_model}] Compiled code validation failed, retrying...")
                 elif resp.status_code in (429, 503, 404):
-                    print(f"[{clean_model}] Model busy or unavailable (Status {resp.status_code}), falling back...")
+                    print(f"[{clean_model}] Model returned status {resp.status_code}, falling back...")
                     break
                 else:
                     print(f"[{clean_model}] HTTP Error {resp.status_code}: {resp.text}")
