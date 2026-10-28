@@ -24,8 +24,6 @@ CRITICAL FEATURE RETENTION:
    - Always build from the primary base mass first (e.g. cq.Workplane("XY").circle(r).extrude(h)), add features via .union(), and perform subtractions/holes (.cut()) last.
 6. COMPLETE FEATURE COVERAGE:
    - Include every feature mentioned: slots, keyways, clearance bores, ventilation vents, and bolt patterns.
-   - Standard central bore & keyway:
-     base = base.faces(">Z").workplane().hole(params["bore_dia"])
 7. OPENCASCADE STABILITY:
    - Construct geometry strictly via Constructive Solid Geometry (CSG).
    - Avoid zero-thickness tangency cuts and avoid applying edge fillets to boolean intersection seams.
@@ -76,7 +74,6 @@ def compile_to_files(code_str: str, session_id: str):
         exporters.export(res, stl_path, exporters.ExportTypes.STL, tolerance=0.1, angularTolerance=0.1)
         exporters.export(res, step_path, exporters.ExportTypes.STEP)
 
-        # Telemetry calculations
         val = res.val()
         vol_cm3 = round(val.Volume() / 1000.0, 3)
         bbox = val.BoundingBox()
@@ -97,6 +94,20 @@ def compile_to_files(code_str: str, session_id: str):
         return None, None, None
 
 def fallback_generator(prompt: str) -> str:
+    # If the user specifically asks for a bracket
+    if "bracket" in prompt.lower() or "l-shape" in prompt.lower():
+        return """params = {
+    "width": 50.0,
+    "height": 60.0,
+    "thickness": 4.0,
+    "hole_dia": 12.0
+}
+base = cq.Workplane("XY").box(params["width"], params["width"], params["thickness"])
+vert = cq.Workplane("XZ").transformed(offset=(0, params["width"]/2, params["height"]/2)).box(params["width"], params["thickness"], params["height"])
+result = base.union(vert)
+result = result.faces(">Z").workplane().hole(params["hole_dia"])
+"""
+    # Standard parametric disk fallback
     return """params = {
     "outer_dia": 60.0,
     "thickness": 6.0,
@@ -113,14 +124,14 @@ result = base.cut(key)
 def call_gemini(prompt: str) -> str:
     key = os.getenv("GEMINI_API_KEY", "").strip()
     if not key:
-        print("[AI Synthesis] No GEMINI_API_KEY found in environment.")
+        print("[AI Synthesis] CRITICAL: GEMINI_API_KEY is not set on Render.")
         return fallback_generator(prompt)
 
     payload = {
         "contents": [{
             "parts": [
                 {"text": SYSTEM_PROMPT},
-                {"text": f"Engineering Request: {prompt}\nBe meticulous: generate a single connected watertight solid with every specified slot, bore, hole pattern, and cut."}
+                {"text": f"Engineering Request: {prompt}\nGenerate the single watertight manifold solid adhering strictly to the specs."}
             ]
         }],
         "generationConfig": {
@@ -129,48 +140,33 @@ def call_gemini(prompt: str) -> str:
         }
     }
 
-    active_models = [
+    # Verified stable models on Google AI API
+    candidate_models = [
         "gemini-2.5-flash",
         "gemini-2.0-flash",
         "gemini-1.5-flash",
-        "gemini-1.5-flash-latest"
+        "gemini-1.5-pro"
     ]
 
-    for model in active_models:
-        clean_model = model.replace("models/", "")
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{clean_model}:generateContent?key={key}"
-
-        for _ in range(2):
-            try:
-                resp = requests.post(
-                    url,
-                    headers={"Content-Type": "application/json"},
-                    json=payload,
-                    timeout=30
-                )
-
-                if resp.status_code == 200:
-                    data = resp.json()
-                    candidates = data.get("candidates", [])
-                    if not candidates:
-                        continue
+    for model_name in candidate_models:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={key}"
+        try:
+            resp = requests.post(url, headers={"Content-Type": "application/json"}, json=payload, timeout=25)
+            if resp.status_code == 200:
+                data = resp.json()
+                candidates = data.get("candidates", [])
+                if candidates:
                     text = candidates[0]["content"]["parts"][0]["text"]
                     clean_code = re.sub(r"^```python\s*|^```\s*|```$", "", text.strip(), flags=re.MULTILINE)
-
                     if validate_and_compile(clean_code):
-                        print(f"[AI Synthesis Success] Generated watertight CadQuery via {clean_model}!")
+                        print(f"[AI Synthesis Success] Generated unique model via {model_name}!")
                         return clean_code
                     else:
-                        print(f"[{clean_model}] Compiled code validation failed, retrying...")
-                elif resp.status_code in (429, 503, 404):
-                    print(f"[{clean_model}] Model returned status {resp.status_code}, falling back...")
-                    break
-                else:
-                    print(f"[{clean_model}] HTTP Error {resp.status_code}: {resp.text}")
-                    break
-            except Exception as e:
-                print(f"[{clean_model}] Network/Timeout Error: {e}")
-                break
+                        print(f"[{model_name}] OpenCASCADE compile check failed on generated code.")
+            else:
+                print(f"[{model_name}] HTTP {resp.status_code}: {resp.text[:120]}")
+        except Exception as e:
+            print(f"[{model_name}] Network error: {e}")
 
-    print("[AI Synthesis] All models exhausted or busy, serving fallback generator.")
+    print("[AI Synthesis] Using fallback generator.")
     return fallback_generator(prompt)
