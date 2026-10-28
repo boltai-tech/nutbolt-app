@@ -1,6 +1,6 @@
-import { useEffect, useRef, useState } from "react";
+﻿import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { Sparkles, Copy, Check, SlidersHorizontal, Code, Scale } from "lucide-react";
+import { Sparkles, Copy, Check, SlidersHorizontal, Code, Scale, Zap, X, ShieldCheck } from "lucide-react";
 import CadViewport from "../components/CadViewport.jsx";
 
 const API = "https://nutbolt-backend.onrender.com";
@@ -31,10 +31,39 @@ export default function Studio() {
   const timer = useRef(null);
   const auto = useRef(false);
 
+  // Credit System State
+  const [credits, setCredits] = useState(5);
+  const [showUpgradeModal, setShowUpgradeModal] = useState(false);
+
+  useEffect(() => {
+    const today = new Date().toISOString().slice(0, 10);
+    const savedDate = localStorage.getItem("nutbolt_credit_date");
+    const savedCredits = localStorage.getItem("nutbolt_credits");
+
+    if (savedDate !== today) {
+      localStorage.setItem("nutbolt_credit_date", today);
+      localStorage.setItem("nutbolt_credits", "5");
+      setCredits(5);
+    } else if (savedCredits !== null) {
+      setCredits(parseInt(savedCredits, 10));
+    }
+  }, []);
+
+  const updateCredits = (newCount) => {
+    setCredits(newCount);
+    localStorage.setItem("nutbolt_credits", newCount.toString());
+  };
+
   const abs = (u) => (u.startsWith("http") ? u : API + u) + "?t=" + Date.now();
 
   const generate = async (text = prompt) => {
     if (!text.trim()) return;
+
+    if (credits <= 0) {
+      setShowUpgradeModal(true);
+      return;
+    }
+
     setBusy(true); setErr("");
     try {
       const r = await fetch(`${API}/api/generate`, {
@@ -49,6 +78,7 @@ export default function Studio() {
       const d = await r.json();
       setM({ ...d, stl: abs(d.stl_url), step: API + d.step_url });
       setHistory((h) => [text, ...h.filter((x) => x !== text)].slice(0, 6));
+      updateCredits(credits - 1);
     } catch (e) {
       setErr(`${e.message}. Is the FastAPI kernel running at ${API}?`);
     }
@@ -93,6 +123,11 @@ export default function Studio() {
     setTimeout(() => setCopied(false), 1400);
   };
 
+  const handleSimulatePayment = (addedCredits) => {
+    updateCredits(credits + addedCredits);
+    setShowUpgradeModal(false);
+  };
+
   const vol = m?.telemetry?.volume_cm3;
 
   return (
@@ -100,9 +135,30 @@ export default function Studio() {
       <aside className="console">
         <header>
           <Link to="/" className="logo">nut<b>bolt</b>.ai</Link>
-          <span className={"status" + (busy ? " busy" : "")}>
-            <i />{busy ? "COMPILING" : "KERNEL READY"}
-          </span>
+          <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
+            <button 
+              onClick={() => setShowUpgradeModal(true)}
+              style={{
+                background: credits > 0 ? "rgba(0, 240, 255, 0.1)" : "rgba(255, 75, 75, 0.2)",
+                border: credits > 0 ? "1px solid rgba(0, 240, 255, 0.3)" : "1px solid rgba(255, 75, 75, 0.4)",
+                color: credits > 0 ? "var(--cyan, #00f0ff)" : "#ff6b6b",
+                padding: "3px 8px",
+                borderRadius: "12px",
+                fontSize: "11px",
+                fontWeight: 600,
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                gap: "4px"
+              }}
+            >
+              <Zap size={12} />
+              {credits > 0 ? `${credits} Credits Left` : "0 Credits (Refill)"}
+            </button>
+            <span className={"status" + (busy ? " busy" : "")}>
+              <i />{busy ? "COMPILING" : "KERNEL READY"}
+            </span>
+          </div>
         </header>
 
         <div style={{ padding: "16px 18px", borderBottom: "1px solid var(--line)" }}>
@@ -117,7 +173,12 @@ export default function Studio() {
             <span className="core-chip">OpenCASCADE Core</span>
             <span>Ctrl+Enter to compile</span>
           </div>
-          <button className="btn gold" style={{ width: "100%" }} disabled={busy} onClick={() => generate()}>
+          <button 
+            className="btn gold" 
+            style={{ width: "100%" }} 
+            disabled={busy} 
+            onClick={() => generate()}
+          >
             <Sparkles size={15} />{busy ? "SYNTHESIZING SOLID..." : "SYNTHESIZE SOLID"}
           </button>
           <div className="chips">
@@ -214,6 +275,159 @@ export default function Studio() {
       </aside>
 
       <CadViewport stlUrl={m?.stl} stepUrl={m?.step} busy={busy} />
+
+      {/* Pricing & Upgrade Modal */}
+      {showUpgradeModal && (
+        <div style={{
+          position: "fixed",
+          inset: 0,
+          backgroundColor: "rgba(5, 7, 15, 0.82)",
+          backdropFilter: "blur(8px)",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center",
+          zIndex: 9999,
+          padding: "20px"
+        }}>
+          <div style={{
+            background: "#0d111c",
+            border: "1px solid rgba(255, 255, 255, 0.12)",
+            borderRadius: "16px",
+            width: "100%",
+            maxWidth: "520px",
+            padding: "28px",
+            boxShadow: "0 25px 60px rgba(0, 0, 0, 0.6)",
+            position: "relative",
+            color: "#fff"
+          }}>
+            <button 
+              onClick={() => setShowUpgradeModal(false)}
+              style={{
+                position: "absolute",
+                top: "16px",
+                right: "16px",
+                background: "transparent",
+                border: "none",
+                color: "#7e8b9b",
+                cursor: "pointer"
+              }}
+            >
+              <X size={20} />
+            </button>
+
+            <div style={{ textAlign: "center", marginBottom: "24px" }}>
+              <div style={{
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                width: "48px",
+                height: "48px",
+                borderRadius: "50%",
+                background: "rgba(0, 240, 255, 0.1)",
+                color: "#00f0ff",
+                marginBottom: "12px"
+              }}>
+                <Zap size={24} />
+              </div>
+              <h3 style={{ margin: "0 0 6px 0", fontSize: "20px", fontWeight: 700 }}>
+                {credits <= 0 ? "Daily Free Quota Reached" : "Upgrade Your Engine"}
+              </h3>
+              <p style={{ margin: 0, fontSize: "13px", color: "#8a99ad" }}>
+                Keep synthesizing complex parts without interruption.
+              </p>
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "14px", marginBottom: "20px" }}>
+              {/* Pocket Refill */}
+              <div style={{
+                background: "rgba(255, 255, 255, 0.03)",
+                border: "1px solid rgba(255, 255, 255, 0.08)",
+                borderRadius: "12px",
+                padding: "16px",
+                display: "flex",
+                flexDirection: "column",
+                justifyContent: "space-between"
+              }}>
+                <div>
+                  <span style={{ fontSize: "11px", color: "#8a99ad", fontWeight: 600, letterSpacing: "0.5px" }}>ONE-TIME</span>
+                  <h4 style={{ margin: "4px 0 8px 0", fontSize: "16px" }}>Pocket Refill</h4>
+                  <div style={{ fontSize: "24px", fontWeight: 800, marginBottom: "8px" }}>
+                    ₹99 <span style={{ fontSize: "12px", color: "#8a99ad", fontWeight: 400 }}>($1.29)</span>
+                  </div>
+                  <ul style={{ margin: 0, paddingLeft: "16px", fontSize: "12px", color: "#cbd5e1", lineHeight: "1.6" }}>
+                    <li><b>25 Credits</b></li>
+                    <li>Never expires</li>
+                    <li>Standard STL Export</li>
+                  </ul>
+                </div>
+                <button 
+                  onClick={() => handleSimulatePayment(25)}
+                  style={{
+                    marginTop: "16px",
+                    width: "100%",
+                    padding: "10px",
+                    borderRadius: "8px",
+                    border: "1px solid rgba(255, 255, 255, 0.15)",
+                    background: "#182032",
+                    color: "#fff",
+                    fontWeight: 600,
+                    fontSize: "13px",
+                    cursor: "pointer"
+                  }}
+                >
+                  Get 25 Credits
+                </button>
+              </div>
+
+              {/* Maker Monthly */}
+              <div style={{
+                background: "linear-gradient(180deg, rgba(0, 240, 255, 0.08) 0%, rgba(0, 0, 0, 0.1) 100%)",
+                border: "1px solid rgba(0, 240, 255, 0.35)",
+                borderRadius: "12px",
+                padding: "16px",
+                display: "flex",
+                flexDirection: "column",
+                justifyContent: "space-between"
+              }}>
+                <div>
+                  <span style={{ fontSize: "11px", color: "#00f0ff", fontWeight: 700, letterSpacing: "0.5px" }}>BEST VALUE</span>
+                  <h4 style={{ margin: "4px 0 8px 0", fontSize: "16px" }}>Maker Pass</h4>
+                  <div style={{ fontSize: "24px", fontWeight: 800, marginBottom: "8px" }}>
+                    ₹199 <span style={{ fontSize: "12px", color: "#8a99ad", fontWeight: 400 }}>/ month</span>
+                  </div>
+                  <ul style={{ margin: 0, paddingLeft: "16px", fontSize: "12px", color: "#cbd5e1", lineHeight: "1.6" }}>
+                    <li><b>100 Generations</b> / mo</li>
+                    <li>STEP & STL Export</li>
+                    <li>Priority Queue</li>
+                  </ul>
+                </div>
+                <button 
+                  onClick={() => handleSimulatePayment(100)}
+                  style={{
+                    marginTop: "16px",
+                    width: "100%",
+                    padding: "10px",
+                    borderRadius: "8px",
+                    border: "none",
+                    background: "linear-gradient(90deg, #00f0ff 0%, #00a8ff 100%)",
+                    color: "#05070f",
+                    fontWeight: 700,
+                    fontSize: "13px",
+                    cursor: "pointer"
+                  }}
+                >
+                  Upgrade to Pass
+                </button>
+              </div>
+            </div>
+
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "6px", fontSize: "11px", color: "#7e8b9b" }}>
+              <ShieldCheck size={14} color="#00f0ff" />
+              <span>Instant activation via UPI, Cards, or Netbanking</span>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
