@@ -1,9 +1,9 @@
 ﻿import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
-import { Sparkles, Copy, Check, SlidersHorizontal, Code, Scale, Zap, X, ShieldCheck } from "lucide-react";
+import { Sparkles, Copy, Check, SlidersHorizontal, Code, Scale, Zap, X, ShieldCheck, SearchCheck, CheckCircle } from "lucide-react";
 import CadViewport from "../components/CadViewport.jsx";
 
-const API = "https://nutbolt-backend.onrender.com";
+const API = "[https://nutbolt-backend.onrender.com](https://nutbolt-backend.onrender.com)";
 const DENSITY = [
   ["Aluminum 6061-T6", 2.70],
   ["Titanium Grade 5", 4.43],
@@ -31,9 +31,13 @@ export default function Studio() {
   const timer = useRef(null);
   const auto = useRef(false);
 
-  // Credit System State
+  // Credit System
   const [credits, setCredits] = useState(5);
   const [showUpgradeModal, setShowUpgradeModal] = useState(false);
+
+  // Prompt Auditor
+  const [auditing, setAuditing] = useState(false);
+  const [auditResult, setAuditResult] = useState(null);
 
   useEffect(() => {
     const today = new Date().toISOString().slice(0, 10);
@@ -56,9 +60,27 @@ export default function Studio() {
 
   const abs = (u) => (u.startsWith("http") ? u : API + u) + "?t=" + Date.now();
 
+  const auditPrompt = async () => {
+    if (!prompt.trim()) return;
+    setAuditing(true);
+    setErr("");
+    try {
+      const res = await fetch(`${API}/api/analyze-prompt`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt })
+      });
+      if (!res.ok) throw new Error("Audit service unavailable.");
+      const data = await res.json();
+      setAuditResult(data);
+    } catch (e) {
+      setErr(`Prompt check warning: ${e.message}`);
+    }
+    setAuditing(false);
+  };
+
   const generate = async (text = prompt) => {
     if (!text.trim()) return;
-
     if (credits <= 0) {
       setShowUpgradeModal(true);
       return;
@@ -79,6 +101,7 @@ export default function Studio() {
       setM({ ...d, stl: abs(d.stl_url), step: API + d.step_url });
       setHistory((h) => [text, ...h.filter((x) => x !== text)].slice(0, 6));
       updateCredits(credits - 1);
+      setAuditResult(null);
     } catch (e) {
       setErr(`${e.message}. Is the FastAPI kernel running at ${API}?`);
     }
@@ -169,10 +192,108 @@ export default function Studio() {
             placeholder="Describe the mechanical part: dimensions, holes, fillets, bolt circles, wall thickness..."
             onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) generate(); }}
           />
+
+          <div style={{ display: "flex", gap: "6px", margin: "6px 0 10px 0" }}>
+            <button
+              type="button"
+              onClick={auditPrompt}
+              disabled={auditing || busy || !prompt.trim()}
+              style={{
+                flex: 1,
+                background: "rgba(255, 255, 255, 0.05)",
+                border: "1px solid rgba(255, 255, 255, 0.12)",
+                color: "#94a3b8",
+                padding: "7px 10px",
+                borderRadius: "6px",
+                fontSize: "11px",
+                cursor: "pointer",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                gap: "5px"
+              }}
+            >
+              <SearchCheck size={13} color="#00f0ff" />
+              {auditing ? "Analyzing Specs..." : "Audit & Fix Prompt"}
+            </button>
+          </div>
+
+          {auditResult && (
+            <div style={{
+              background: "rgba(10, 15, 28, 0.85)",
+              border: "1px solid rgba(0, 240, 255, 0.25)",
+              borderRadius: "8px",
+              padding: "10px 12px",
+              marginBottom: "12px",
+              fontSize: "12px"
+            }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
+                <span style={{ fontWeight: 600, color: "#00f0ff", fontSize: "11px" }}>CAD SPEC FEASIBILITY</span>
+                <span style={{
+                  fontWeight: 700,
+                  fontSize: "12px",
+                  color: auditResult.score >= 8 ? "#22c55e" : auditResult.score >= 5 ? "#f59e0b" : "#ef4444"
+                }}>
+                  {auditResult.score}/10
+                </span>
+              </div>
+
+              <ul style={{ margin: "0 0 8px 0", paddingLeft: "14px", color: "#94a3b8", fontSize: "11px", lineHeight: "1.4" }}>
+                {auditResult.critique?.map((item, idx) => (
+                  <li key={idx}>{item}</li>
+                ))}
+              </ul>
+
+              {auditResult.improved_prompt && (
+                <div>
+                  <div style={{ fontSize: "10px", color: "#64748b", fontWeight: 700, marginBottom: "3px" }}>OPTIMIZED SPEC:</div>
+                  <div style={{
+                    background: "rgba(0, 0, 0, 0.4)",
+                    padding: "6px 8px",
+                    borderRadius: "4px",
+                    fontFamily: "monospace",
+                    fontSize: "11px",
+                    color: "#cbd5e1",
+                    marginBottom: "8px",
+                    maxHeight: "70px",
+                    overflowY: "auto"
+                  }}>
+                    {auditResult.improved_prompt}
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPrompt(auditResult.improved_prompt);
+                      setAuditResult(null);
+                    }}
+                    style={{
+                      width: "100%",
+                      padding: "6px",
+                      borderRadius: "5px",
+                      border: "none",
+                      background: "rgba(0, 240, 255, 0.2)",
+                      color: "#00f0ff",
+                      fontWeight: 600,
+                      fontSize: "11px",
+                      cursor: "pointer",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      gap: "5px"
+                    }}
+                  >
+                    <CheckCircle size={12} /> Apply Suggested Spec
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
+
           <div className="row">
             <span className="core-chip">OpenCASCADE Core</span>
             <span>Ctrl+Enter to compile</span>
           </div>
+
           <button 
             className="btn gold" 
             style={{ width: "100%" }} 
@@ -181,6 +302,7 @@ export default function Studio() {
           >
             <Sparkles size={15} />{busy ? "SYNTHESIZING SOLID..." : "SYNTHESIZE SOLID"}
           </button>
+
           <div className="chips">
             {history.map((h) => (
               <span key={h} className="chip" style={{ cursor: "pointer" }} onClick={() => { setPrompt(h); generate(h); }}>
