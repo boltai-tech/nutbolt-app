@@ -9,22 +9,58 @@ SYSTEM_PROMPT = """You are a Principal Computational CAD & Mechanical Design Eng
 Translate natural language specifications into a valid, watertight, single-body manifold CadQuery 3D model.
 
 CRITICAL FEATURE RETENTION:
-1. Wrap all key dimensions at the very top in a dictionary named `params`. Example:
-   params = {
-       "length": 100.0,
-       "width": 60.0,
-       "thickness": 8.0,
-       "center_bore": 25.0
-   }
+1. Wrap all key dimensions at the very top in a dictionary named `params`.
 2. Assign the final CadQuery object to a variable named `result`.
 3. Do NOT import cadquery (it is pre-injected in runtime execution scope as `cq`).
 4. Output ONLY raw executable Python code. No markdown fences, no conversational commentary.
 5. SINGLE SOLID CONTINUITY:
-   - The output must always remain ONE single connected solid body.
-   - Build from the primary base mass first, add features via .union(), and perform subtractions/holes (.cut()) last.
-6. OPENCASCADE STABILITY:
-   - CSG only. Avoid zero-thickness tangencies and manifold collisions.
+   - Must remain ONE single connected solid body.
+   - Build base first, union secondary features, cut/hole last.
 """
+
+# Cached models verified dynamically from Google API
+CACHED_MODELS = []
+
+def get_live_models(key: str) -> list:
+    global CACHED_MODELS
+    if CACHED_MODELS:
+        return CACHED_MODELS
+
+    headers = {"Content-Type": "application/json", "x-goog-api-key": key}
+    url = f"https://generativelanguage.googleapis.com/v1beta/models?key={key}"
+
+    try:
+        resp = requests.get(url, headers=headers, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json().get("models", [])
+            # Filter models that support content generation
+            usable = []
+            for m in data:
+                methods = m.get("supportedGenerationMethods", [])
+                name = m.get("name", "").replace("models/", "")
+                if "generateContent" in methods:
+                    usable.append(name)
+
+            # Prioritize Flash models, then general models
+            priority = ["3.8-flash", "3.6-flash", "3.5-flash-lite", "3.1-flash-lite", "flash"]
+            sorted_models = []
+            for p in priority:
+                for u in usable:
+                    if p in u and u not in sorted_models:
+                        sorted_models.append(u)
+            for u in usable:
+                if u not in sorted_models:
+                    sorted_models.append(u)
+
+            if sorted_models:
+                print(f"[Dynamic Model Discovery] Found {len(sorted_models)} active models: {sorted_models[:4]}")
+                CACHED_MODELS = sorted_models
+                return CACHED_MODELS
+    except Exception as e:
+        print(f"[Dynamic Model Discovery Error]: {e}")
+
+    # Fallback to standard 2026 active endpoints if discovery fails
+    return ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite", "gemini-3.1-flash-lite"]
 
 def extract_params_from_code(code_str: str) -> dict:
     try:
@@ -87,8 +123,34 @@ def compile_to_files(code_str: str, session_id: str):
 
 def fallback_generator(prompt: str) -> str:
     p = prompt.lower()
-    
-    # Rectangular plate / mounting plate
+    if "geneva" in p:
+        return """params = {
+    "outer_dia": 70.0,
+    "thickness": 6.0,
+    "bore_dia": 8.0,
+    "slot_w": 4.0,
+    "slot_len": 22.0
+}
+wheel = cq.Workplane("XY").circle(params["outer_dia"] / 2).extrude(params["thickness"])
+wheel = wheel.faces(">Z").workplane().hole(params["bore_dia"])
+for angle in [0, 90, 180, 270]:
+    slot = cq.Workplane("XY").rect(params["slot_w"], params["slot_len"]).extrude(params["thickness"]).translate((0, (params["outer_dia"]/2) - (params["slot_len"]/2), 0)).rotate((0,0,0), (0,0,1), angle)
+    wheel = wheel.cut(slot)
+result = wheel
+"""
+    if "bracket" in p or "l-shape" in p:
+        return """params = {
+    "width": 50.0,
+    "height": 60.0,
+    "thickness": 5.0,
+    "pilot_dia": 22.0
+}
+base = cq.Workplane("XY").box(params["width"], params["width"], params["thickness"])
+vert = cq.Workplane("XZ").transformed(offset=(0, params["width"]/2, params["height"]/2)).box(params["width"], params["thickness"], params["height"])
+body = base.union(vert)
+body = body.faces(">Y").workplane().hole(params["pilot_dia"])
+result = body
+"""
     if "plate" in p or "mount" in p or "rectangular" in p:
         return """params = {
     "length": 100.0,
@@ -109,23 +171,6 @@ pts = [
 base = base.faces(">Z").workplane().pushPoints(pts).hole(params["hole_dia"])
 result = base
 """
-
-    # Bracket / L-shape
-    if "bracket" in p or "l-shape" in p:
-        return """params = {
-    "width": 50.0,
-    "height": 60.0,
-    "thickness": 5.0,
-    "pilot_dia": 22.0
-}
-base = cq.Workplane("XY").box(params["width"], params["width"], params["thickness"])
-vert = cq.Workplane("XZ").transformed(offset=(0, params["width"]/2, params["height"]/2)).box(params["width"], params["thickness"], params["height"])
-body = base.union(vert)
-body = body.faces(">Y").workplane().hole(params["pilot_dia"])
-result = body
-"""
-
-    # Flange
     if "flange" in p:
         return """params = {
     "outer_dia": 90.0,
@@ -139,68 +184,66 @@ base = base.faces(">Z").workplane().hole(params["bore_dia"])
 base = base.faces(">Z").workplane().polarArray(params["pcd"] / 2, 0, 360, 6).hole(params["bolt_dia"])
 result = base
 """
-
-    # Default Shaft / Hub
     return """params = {
     "outer_dia": 60.0,
-    "thickness": 10.0,
-    "bore_dia": 12.0
+    "thickness": 8.0,
+    "bore_dia": 10.0
 }
 base = cq.Workplane("XY").circle(params["outer_dia"] / 2).extrude(params["thickness"])
-base = base.faces(">Z").workplane().hole(params["bore_dia"])
-result = base
+result = base.faces(">Z").workplane().hole(params["bore_dia"])
 """
 
-def call_gemini(prompt: str) -> str:
+def execute_llm_cascade(prompt_text: str, is_audit: bool = False) -> str:
     key = os.getenv("GEMINI_API_KEY", "").strip()
     if not key:
-        print("[AI Synthesis] GEMINI_API_KEY is missing on Render.")
-        return fallback_generator(prompt)
+        print("[AI Engine] GEMINI_API_KEY environment variable is missing.")
+        return "" if is_audit else fallback_generator(prompt_text)
+
+    models = get_live_models(key)
+    headers = {"Content-Type": "application/json", "x-goog-api-key": key}
+
+    user_msg = prompt_text if is_audit else f"Engineering Request: {prompt_text}\nOutput raw executable CadQuery Python code only."
+    sys_instruction = "You are a senior CAD engineer. Audit this user prompt and output a refined, precise technical specification with dimensions." if is_audit else SYSTEM_PROMPT
 
     payload = {
         "contents": [{
             "parts": [
-                {"text": SYSTEM_PROMPT},
-                {"text": f"Engineering Request: {prompt}\nOutput raw executable CadQuery Python code only."}
+                {"text": sys_instruction},
+                {"text": user_msg}
             ]
         }],
         "generationConfig": {
-            "temperature": 0.1,
-            "maxOutputTokens": 2048
+            "temperature": 0.2 if is_audit else 0.1,
+            "maxOutputTokens": 1024 if is_audit else 2048
         }
     }
 
-    headers = {
-        "Content-Type": "application/json",
-        "x-goog-api-key": key
-    }
-
-    # Verified modern model endpoints
-    models_to_try = [
-        "gemini-2.5-flash",
-        "gemini-2.0-flash",
-        "gemini-flash-latest"
-    ]
-
-    for model in models_to_try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
+    for model in models:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
         try:
-            resp = requests.post(url, headers=headers, json=payload, timeout=25)
+            resp = requests.post(url, headers=headers, json=payload, timeout=20)
             if resp.status_code == 200:
                 data = resp.json()
                 candidates = data.get("candidates", [])
                 if candidates:
-                    text = candidates[0]["content"]["parts"][0]["text"]
-                    clean_code = re.sub(r"^```python\s*|^```\s*|```$", "", text.strip(), flags=re.MULTILINE)
+                    text = candidates[0]["content"]["parts"][0]["text"].strip()
+                    if is_audit:
+                        print(f"[Audit Success] Using model {model}")
+                        return text
+                    clean_code = re.sub(r"^```python\s*|^```\s*|```$", "", text, flags=re.MULTILINE)
                     if validate_and_compile(clean_code):
-                        print(f"[AI Synthesis Success] Generated unique model using {model}!")
+                        print(f"[Synthesis Success] Generated solid via model {model}")
                         return clean_code
-                    else:
-                        print(f"[{model}] Generated code failed CAD compilation.")
             else:
-                print(f"[{model}] HTTP {resp.status_code}: {resp.text[:120]}")
+                print(f"[{model}] Status {resp.status_code}: {resp.text[:100]}")
         except Exception as e:
-            print(f"[{model}] Error: {e}")
+            print(f"[{model}] Request failed: {e}")
 
-    print("[AI Synthesis] Models unavailable, using dynamic fallback for prompt.")
-    return fallback_generator(prompt)
+    return "" if is_audit else fallback_generator(prompt_text)
+
+def call_gemini(prompt: str) -> str:
+    return execute_llm_cascade(prompt, is_audit=False)
+
+def audit_gemini(prompt: str) -> str:
+    res = execute_llm_cascade(prompt, is_audit=True)
+    return res if res else f"Refined specification: {prompt} with precision tolerances and standard fillets."

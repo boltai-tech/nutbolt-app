@@ -40,16 +40,8 @@ def health_check():
 
 @app.post("/api/analyze-prompt")
 def analyze_cad_prompt(req: AnalyzeRequest):
-    if not req.prompt.strip():
-        raise HTTPException(status_code=400, detail="Prompt cannot be empty.")
-    
-    key = os.getenv("GEMINI_API_KEY", "").strip()
-    if not key:
-        return {
-            "score": 6,
-            "critique": ["Missing GEMINI_API_KEY for dynamic review. Ensure outer diameter, thickness, and mounting details are specified."],
-            "improved_prompt": req.prompt
-        }
+    audited = audit_gemini(req.prompt if hasattr(req, 'prompt') else str(req))
+    return {"audited_prompt": audited}
 
     analysis_instruction = """You are a Senior Mechanical & Parametric CAD Engineer reviewer.
 Analyze the user's natural language CAD description for OpenCASCADE / CadQuery compilation viability.
@@ -148,3 +140,4 @@ def recompile_cad(req: RecompileRequest):
         "stl_url": f"/assets/{req.session_id}/part.stl",
         "telemetry": telemetry
     }
+
