@@ -11,9 +11,10 @@ Translate natural language specifications into a valid, watertight, single-body 
 CRITICAL FEATURE RETENTION:
 1. Wrap all key dimensions at the very top in a dictionary named `params`. Example:
    params = {
-       "outer_dia": 60.0,
-       "thickness": 6.0,
-       "bore_dia": 8.0
+       "length": 100.0,
+       "width": 60.0,
+       "thickness": 8.0,
+       "center_bore": 25.0
    }
 2. Assign the final CadQuery object to a variable named `result`.
 3. Do NOT import cadquery (it is pre-injected in runtime execution scope as `cq`).
@@ -21,6 +22,8 @@ CRITICAL FEATURE RETENTION:
 5. SINGLE SOLID CONTINUITY:
    - The output must always remain ONE single connected solid body.
    - Build from the primary base mass first, add features via .union(), and perform subtractions/holes (.cut()) last.
+6. OPENCASCADE STABILITY:
+   - CSG only. Avoid zero-thickness tangencies and manifold collisions.
 """
 
 def extract_params_from_code(code_str: str) -> dict:
@@ -84,56 +87,81 @@ def compile_to_files(code_str: str, session_id: str):
 
 def fallback_generator(prompt: str) -> str:
     p = prompt.lower()
+    
+    # Rectangular plate / mounting plate
+    if "plate" in p or "mount" in p or "rectangular" in p:
+        return """params = {
+    "length": 100.0,
+    "width": 60.0,
+    "thickness": 8.0,
+    "center_bore": 25.0,
+    "hole_dia": 6.0,
+    "inset": 10.0
+}
+base = cq.Workplane("XY").box(params["length"], params["width"], params["thickness"])
+base = base.faces(">Z").workplane().hole(params["center_bore"])
+pts = [
+    (params["length"]/2 - params["inset"], params["width"]/2 - params["inset"]),
+    (-params["length"]/2 + params["inset"], params["width"]/2 - params["inset"]),
+    (params["length"]/2 - params["inset"], -params["width"]/2 + params["inset"]),
+    (-params["length"]/2 + params["inset"], -params["width"]/2 + params["inset"])
+]
+base = base.faces(">Z").workplane().pushPoints(pts).hole(params["hole_dia"])
+result = base
+"""
+
+    # Bracket / L-shape
     if "bracket" in p or "l-shape" in p:
         return """params = {
     "width": 50.0,
     "height": 60.0,
-    "thickness": 4.0,
-    "hole_dia": 12.0
+    "thickness": 5.0,
+    "pilot_dia": 22.0
 }
 base = cq.Workplane("XY").box(params["width"], params["width"], params["thickness"])
 vert = cq.Workplane("XZ").transformed(offset=(0, params["width"]/2, params["height"]/2)).box(params["width"], params["thickness"], params["height"])
-result = base.union(vert)
-result = result.faces(">Z").workplane().hole(params["hole_dia"])
+body = base.union(vert)
+body = body.faces(">Y").workplane().hole(params["pilot_dia"])
+result = body
 """
-    if "geneva" in p:
+
+    # Flange
+    if "flange" in p:
         return """params = {
-    "outer_dia": 70.0,
-    "thickness": 6.0,
-    "bore_dia": 8.0,
-    "slot_w": 4.0
-}
-wheel = cq.Workplane("XY").circle(params["outer_dia"] / 2).extrude(params["thickness"])
-wheel = wheel.faces(">Z").workplane().hole(params["bore_dia"])
-for angle in [0, 90, 180, 270]:
-    slot = cq.Workplane("XY").rect(params["slot_w"], params["outer_dia"] / 2).extrude(params["thickness"]).translate((0, params["outer_dia"] / 4, 0)).rotate((0,0,0), (0,0,1), angle)
-    wheel = wheel.cut(slot)
-result = wheel
-"""
-    return """params = {
-    "outer_dia": 60.0,
-    "thickness": 6.0,
-    "bore_dia": 8.0,
-    "key_w": 2.0,
-    "key_h": 1.0
+    "outer_dia": 90.0,
+    "thickness": 12.0,
+    "bore_dia": 40.0,
+    "bolt_dia": 8.0,
+    "pcd": 68.0
 }
 base = cq.Workplane("XY").circle(params["outer_dia"] / 2).extrude(params["thickness"])
 base = base.faces(">Z").workplane().hole(params["bore_dia"])
-key = cq.Workplane("XY").rect(params["key_w"], params["bore_dia"] + params["key_h"] * 2).extrude(params["thickness"])
-result = base.cut(key)
+base = base.faces(">Z").workplane().polarArray(params["pcd"] / 2, 0, 360, 6).hole(params["bolt_dia"])
+result = base
+"""
+
+    # Default Shaft / Hub
+    return """params = {
+    "outer_dia": 60.0,
+    "thickness": 10.0,
+    "bore_dia": 12.0
+}
+base = cq.Workplane("XY").circle(params["outer_dia"] / 2).extrude(params["thickness"])
+base = base.faces(">Z").workplane().hole(params["bore_dia"])
+result = base
 """
 
 def call_gemini(prompt: str) -> str:
     key = os.getenv("GEMINI_API_KEY", "").strip()
     if not key:
-        print("[AI Synthesis] CRITICAL: GEMINI_API_KEY environment variable is empty.")
+        print("[AI Synthesis] GEMINI_API_KEY is missing on Render.")
         return fallback_generator(prompt)
 
     payload = {
         "contents": [{
             "parts": [
                 {"text": SYSTEM_PROMPT},
-                {"text": f"Engineering Request: {prompt}\nOutput ONLY executable Python code."}
+                {"text": f"Engineering Request: {prompt}\nOutput raw executable CadQuery Python code only."}
             ]
         }],
         "generationConfig": {
@@ -142,20 +170,20 @@ def call_gemini(prompt: str) -> str:
         }
     }
 
-    # Pass the key in BOTH the header and the URL query param for universal auth support
     headers = {
         "Content-Type": "application/json",
         "x-goog-api-key": key
     }
 
+    # Verified modern model endpoints
     models_to_try = [
         "gemini-2.5-flash",
         "gemini-2.0-flash",
-        "gemini-1.5-flash"
+        "gemini-flash-latest"
     ]
 
     for model in models_to_try:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
         try:
             resp = requests.post(url, headers=headers, json=payload, timeout=25)
             if resp.status_code == 200:
@@ -170,9 +198,9 @@ def call_gemini(prompt: str) -> str:
                     else:
                         print(f"[{model}] Generated code failed CAD compilation.")
             else:
-                print(f"[{model}] API Status {resp.status_code}: {resp.text[:120]}")
+                print(f"[{model}] HTTP {resp.status_code}: {resp.text[:120]}")
         except Exception as e:
-            print(f"[{model}] Request failed: {e}")
+            print(f"[{model}] Error: {e}")
 
-    print("[AI Synthesis] Gemini generation unsuccessful, serving intelligent fallback.")
+    print("[AI Synthesis] Models unavailable, using dynamic fallback for prompt.")
     return fallback_generator(prompt)
