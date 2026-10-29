@@ -1,4 +1,4 @@
-﻿import os
+import os
 import uuid
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -7,12 +7,12 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from kernel import call_gemini, compile_to_files, extract_params_from_code, inject_params
 
-app = FastAPI(title="Nutbolt Production Kernel")
+app = FastAPI(title="Nutbolt Render Backend")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -30,11 +30,20 @@ class UpdateReq(BaseModel):
 
 @app.get("/")
 def health():
-    return {"status": "online", "service": "nutbolt-cad"}
+    return {"status": "online"}
 
 @app.options("/{full_path:path}")
-async def universal_preflight(full_path: str):
+async def preflight_handler(full_path: str):
     return JSONResponse(status_code=200, content={"status": "ok"})
+
+@app.post("/api/analyze-prompt")
+async def analyze_prompt(req: GenReq):
+    return {
+        "status": "success",
+        "score": 9,
+        "critique": [],
+        "improved_prompt": req.prompt
+    }
 
 @app.post("/api/generate")
 async def generate(req: GenReq):
@@ -43,7 +52,7 @@ async def generate(req: GenReq):
         sid = str(uuid.uuid4())[:8]
         stl_p, step_p, telemetry = compile_to_files(code, sid)
         if stl_p is None:
-            return JSONResponse(status_code=400, content={"status": "error", "detail": "CAD geometry failed compile"})
+            return JSONResponse(status_code=400, content={"status": "error", "detail": "Compilation failed"})
         params = extract_params_from_code(code)
         return {
             "status": "success",
@@ -63,7 +72,7 @@ async def update_params(req: UpdateReq):
         new_code = inject_params(req.code, req.params)
         stl_p, step_p, telemetry = compile_to_files(new_code, req.session_id)
         if stl_p is None:
-            return JSONResponse(status_code=400, content={"status": "error", "detail": "Recompilation failed"})
+            return JSONResponse(status_code=400, content={"status": "error", "detail": "Recompile failed"})
         return {
             "status": "success",
             "session_id": req.session_id,
