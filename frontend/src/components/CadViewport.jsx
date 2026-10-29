@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+﻿import { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { Layers, Box, Download } from "lucide-react";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
@@ -207,12 +207,44 @@ export default function CadViewport({ stlUrl, stepUrl, busy }) {
         <button data-tip={wire ? "Solid shading" : "Wireframe"} className={wire ? "on" : ""} onClick={() => setWire((w) => !w)}>
           <Layers size={18} />
         </button>
-        <a data-tip="Download .STL" href={stlUrl || "#"} download="part.stl">
+        <button
+          type="button"
+          data-tip="Download .STL"
+          className="vp-btn"
+          onClick={() => {
+            if (!stlUrl) {
+              alert("Please synthesize a 3D solid first before downloading.");
+              return;
+            }
+            const a = document.createElement("a");
+            a.href = stlUrl;
+            a.download = "part.stl";
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+          }}
+        >
           <Box size={18} />
-        </a>
-        <a data-tip="Download .STEP (CNC)" className="hot" href={stepUrl || "#"} download="part.step">
+        </button>
+        <button
+          type="button"
+          data-tip="Download .STEP (CNC)"
+          className="hot vp-btn"
+          onClick={() => {
+            if (!stepUrl) {
+              alert("Please synthesize a 3D solid first before downloading.");
+              return;
+            }
+            const a = document.createElement("a");
+            a.href = stepUrl;
+            a.download = "part.step";
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+          }}
+        >
           <Download size={18} />
-        </a>
+        </button>
       </div>
       <div className="hud" style={{ whiteSpace: "nowrap", overflowX: "auto" }}>
         {Object.entries(MATERIALS).map(([k, m]) => (
