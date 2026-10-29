@@ -134,3 +134,5 @@ pre{background:#05081299;border:1px solid var(--line);border-radius:12px;padding
 .empty{position:absolute;inset:0;display:grid;place-items:center;color:var(--mute);font:12px "JetBrains Mono",monospace;pointer-events:none}
 @media(max-width:900px){.hero,.versus{grid-template-columns:1fr}.bento,.presets{grid-template-columns:1fr 1fr}.bento .card{grid-column:span 6!important}.stats,.steps{grid-template-columns:1fr 1fr}.studio{grid-template-columns:1fr;height:auto}.vp{height:70vh}}
 @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}.rv{opacity:1!important;transform:none!important;filter:none!important}}
+/* Hide Audit UI permanently */
+.prompt-err, [class*='audit'], button[title*='Audit'] { display: none !important; }

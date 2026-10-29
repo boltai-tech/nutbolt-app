@@ -1,32 +1,22 @@
 import os
 import re
 import ast
-import json
 import math
 import requests
 import cadquery as cq
 from cadquery import exporters
 
 SYSTEM_PROMPT = """You are a Principal CAD Engineer writing CadQuery Python scripts.
-Generate a single-body, watertight 3D solid.
+Output ONLY executable Python code. No markdown fences (no ```python), no comments.
 
-STRICT RULES:
-1. Declare parameters at the top:
-params = {
-    "width": 50.0,
-    "height": 60.0,
-    "thickness": 5.0
-}
-2. Assign final geometry to `result`.
-3. Output ONLY raw executable Python code. No markdown (no ```python), no comments.
-4. GEOMETRY RULES (NO FLOATING PARTS):
-   - NEVER use multiple .box() calls with .translate(). That creates floating disconnected slabs.
-   - For L-Brackets, U-Channels, and Angles: Draw a single 2D closed profile on Workplane("XZ") using .polyline([...]).close().extrude(width).
-   - For Plates, Flanges, Cylinders: Start with a single .box() or .circle().extrude().
-   - Cut holes directly on faces using .faces(">Z").workplane().pushPoints([...]).hole(d) or .faces(">Y").workplane().hole(d).
-"""
-
-def extract_params_from_code(code_str: str) -> dict:
+RULES:
+1. Declare dimensions in `params = {...}` at the top.
+2. Assign final CadQuery object to `result`.
+3. NO FLOATING PARTS:
+   - Never use multiple .box() calls with .translate().
+   - For L-brackets, U-channels, angles: draw a 2D closed profile on Workplane("XZ") using .polyline([...]).close().extrude(width).
+   - For plates, flanges, spacers: use a single .box() or .circle().extrude().
+   - Cut holes using .faces(">Z").workplane().pushPoints([...]).hole(d) or .faces("<Y").workplane().hole(d). """ - def extract_params_from_code(code_str: str)> dict:
     try:
         tree = ast.parse(code_str)
         for node in tree.body:
@@ -50,29 +40,26 @@ def inject_params(code_str: str, new_params: dict) -> str:
     new_block = "\n".join(lines)
     return re.sub(r"params\s*=\s*\{[^}]*\}", new_block, code_str, count=1)
 
-def execute_and_verify(code_str: str):
-    scope = {"cq": cq, "math": math}
-    exec(code_str, scope)
-    res = scope.get("result")
-    if res is None:
-        raise ValueError("Missing 'result' variable")
-    val = res.val()
-    if val is None or val.Volume() <= 0.001:
-        raise ValueError("Empty volume")
-    return res
-
 def compile_to_files(code_str: str, session_id: str):
     try:
-        res = execute_and_verify(code_str)
+        scope = {"cq": cq, "math": math}
+        exec(code_str, scope)
+        res = scope.get("result")
+        if res is None:
+            return None, None, None
+        val = res.val()
+        if val is None or val.Volume() <= 0.001:
+            return None, None, None
+
         out_dir = os.path.join("assets", session_id)
         os.makedirs(out_dir, exist_ok=True)
         stl_path = os.path.join(out_dir, "part.stl")
         step_path = os.path.join(out_dir, "part.step")
 
-        exporters.export(res, stl_path, exporters.ExportTypes.STL, tolerance=0.2, angularTolerance=0.2)
+        # Fast tessellation tolerances for instant export on Render CPU
+        exporters.export(res, stl_path, exporters.ExportTypes.STL, tolerance=0.3, angularTolerance=0.3)
         exporters.export(res, step_path, exporters.ExportTypes.STEP)
 
-        val = res.val()
         bbox = val.BoundingBox()
         telemetry = {
             "volume_cm3": round(val.Volume() / 1000.0, 3),
@@ -88,28 +75,61 @@ def call_gemini(prompt: str) -> str:
     if not key:
         return fallback_generator(prompt)
 
-    headers = {"Content-Type": "application/json", "x-goog-api-key": key}
+    # Use gemini-1.5-flash directly: zero thinking-token overhead, 2-4 second response
+    url = f"[https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=](https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=){key}"
+    headers = {"Content-Type": "application/json"}
     payload = {
-        "contents": [{"parts": [{"text": SYSTEM_PROMPT}, {"text": f"Build CAD model for: {prompt}"}]}],
-        "generationConfig": {"temperature": 0.1, "maxOutputTokens": 800}
+        "contents": [{"parts": [{"text": SYSTEM_PROMPT + "\nPrompt: " + prompt}]}],
+        "generationConfig": {
+            "temperature": 0.1,
+            "maxOutputTokens": 600
+        }
     }
 
-    for model in ["gemini-2.5-flash", "gemini-1.5-flash"]:
-        url = f"[https://generativelanguage.googleapis.com/v1beta/models/](https://generativelanguage.googleapis.com/v1beta/models/){model}:generateContent?key={key}"
-        try:
-            resp = requests.post(url, headers=headers, json=payload, timeout=8)
-            if resp.status_code == 200:
-                raw = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-                clean = re.sub(r"^```python\s*|^```\s*|```$", "", raw, flags=re.MULTILINE).strip()
-                execute_and_verify(clean)
+    try:
+        resp = requests.post(url, headers=headers, json=payload, timeout=5.5)
+        if resp.status_code == 200:
+            raw = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+            clean = re.sub(r"^```python\s*|^```\s*|```$", "", raw, flags=re.MULTILINE).strip()
+            if "result" in clean and "params" in clean:
                 return clean
-        except Exception as e:
-            print(f"[{model} skipped]: {e}")
+    except Exception as e:
+        print(f"[Fast API timeout/skip, using instant geometry kernel]: {e}")
 
     return fallback_generator(prompt)
 
 def fallback_generator(prompt: str) -> str:
     p = prompt.lower()
+    if "u-channel" in p or "channel" in p:
+        return """params = {
+    "width": 80.0,
+    "flange_height": 40.0,
+    "thickness": 6.0,
+    "length": 100.0,
+    "hole_dia": 8.0
+}
+w, h, t = params["width"], params["flange_height"], params["thickness"]
+pts = [(0,0), (w,0), (w,h), (w-t,h), (w-t,t), (t,t), (t,h), (0,h)]
+result = (
+    cq.Workplane("XZ").polyline(pts).close().extrude(params["length"])
+    .faces("<Z").workplane()
+    .pushPoints([(0, -params["length"]*0.25), (0, params["length"]*0.25)])
+    .hole(params["hole_dia"])
+)
+"""
+    if "bushing" in p or "spacer" in p or "sleeve" in p:
+        return """params = {
+    "outer_dia": 40.0,
+    "inner_bore": 16.0,
+    "height": 35.0
+}
+result = (
+    cq.Workplane("XY")
+    .circle(params["outer_dia"] / 2.0)
+    .circle(params["inner_bore"] / 2.0)
+    .extrude(params["height"])
+)
+"""
     if "bracket" in p or "l-shape" in p:
         return """params = {
     "width": 50.0,
@@ -163,10 +183,12 @@ result = (
     "width": 60.0,
     "length": 60.0,
     "thickness": 5.0,
-    "center_bore": 20.0,
-    "mount_hole": 5.0
+    "center_bore": 22.0,
+    "mount_hole": 3.5,
+    "hole_spacing": 31.0
 }
-pts = [(-20.0, -20.0), (20.0, -20.0), (20.0, 20.0), (-20.0, 20.0)]
+s = params["hole_spacing"] / 2.0
+pts = [(-s, -s), (s, -s), (s, s), (-s, s)]
 result = (
     cq.Workplane("XY").box(params["width"], params["length"], params["thickness"])
     .faces(">Z").workplane().hole(params["center_bore"])

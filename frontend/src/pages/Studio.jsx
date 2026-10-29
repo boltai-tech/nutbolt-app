@@ -74,7 +74,7 @@ export default function Studio() {
       const data = await res.json();
       setAuditResult(data);
     } catch (e) {
-      setErr(`Prompt check warning: ${e.message}`);
+      setErr(` ${e.message}`);
     }
     setAuditing(false);
   };
