@@ -56,7 +56,6 @@ def compile_to_files(code_str: str, session_id: str):
         stl_path = os.path.join(out_dir, "part.stl")
         step_path = os.path.join(out_dir, "part.step")
 
-        # Fast tessellation tolerances for instant export on Render CPU
         exporters.export(res, stl_path, exporters.ExportTypes.STL, tolerance=0.3, angularTolerance=0.3)
         exporters.export(res, step_path, exporters.ExportTypes.STEP)
 
@@ -75,7 +74,6 @@ def call_gemini(prompt: str) -> str:
     if not key:
         return fallback_generator(prompt)
 
-    # Use gemini-1.5-flash directly: zero thinking-token overhead, 2-4 second response
     url = f"[https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=](https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=){key}"
     headers = {"Content-Type": "application/json"}
     payload = {

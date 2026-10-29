@@ -214,7 +214,7 @@ export default function Studio() {
               }}
             >
               <SearchCheck size={13} color="#00f0ff" />
-              {auditing ? "Analyzing Specs..." : "Audit & Fix Prompt"}
+              {auditing ? "Analyzing Specs..." : ""}
             </button>
           </div>
 
