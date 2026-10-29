@@ -1,15 +1,13 @@
 ﻿import os
-import re
-import json
 import uuid
-import requests
-from fastapi import FastAPI, HTTPException
+from typing import Optional
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-import kernel
+from kernel import call_gemini, audit_gemini, compile_to_files, extract_params_from_code, inject_params
 
-app = FastAPI(title="NutBolt CAD Engine")
+app = FastAPI(title="Nutbolt CAD Engine")
 
 app.add_middleware(
     CORSMiddleware,
@@ -22,122 +20,57 @@ app.add_middleware(
 os.makedirs("assets", exist_ok=True)
 app.mount("/assets", StaticFiles(directory="assets"), name="assets")
 
-sessions = {}
-
 class GenerateRequest(BaseModel):
     prompt: str
 
-class RecompileRequest(BaseModel):
+class ParamUpdateRequest(BaseModel):
     session_id: str
+    code: str
     params: dict
-
-class AnalyzeRequest(BaseModel):
-    prompt: str
 
 @app.get("/")
 def health_check():
-    return {"status": "ok", "engine": "NutBolt CAD Kernel v2.5"}
-
-@app.post("/api/analyze-prompt")
-def analyze_cad_prompt(req: AnalyzeRequest):
-    audited = audit_gemini(req.prompt if hasattr(req, 'prompt') else str(req))
-    return {"audited_prompt": audited}
-
-    analysis_instruction = """You are a Senior Mechanical & Parametric CAD Engineer reviewer.
-Analyze the user's natural language CAD description for OpenCASCADE / CadQuery compilation viability.
-
-Identify missing engineering parameters:
-1. Missing primary outer envelope dimensions (diameter, length, width, thickness).
-2. Unspecified bores, keyways, or bolt pitch circle diameters (PCD).
-3. Vague adjectives (e.g. "small holes", "medium plate", "normal thickness").
-4. Geometric fragmentation risks.
-
-Return STRICT JSON matching this schema:
-{
-  "score": <integer from 1 to 10>,
-  "critique": ["concise bullet 1", "concise bullet 2"],
-  "improved_prompt": "A complete, professionally dimensioned rewrite in metric millimeters"
-}
-Output raw JSON only without markdown formatting."""
-
-    payload = {
-        "contents": [{
-            "parts": [
-                {"text": analysis_instruction},
-                {"text": f"User Prompt: {req.prompt}"}
-            ]
-        }],
-        "generationConfig": {
-            "temperature": 0.2,
-            "responseMimeType": "application/json"
-        }
-    }
-
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={key}"
-    try:
-        resp = requests.post(url, headers={"Content-Type": "application/json"}, json=payload, timeout=25)
-        if resp.status_code == 200:
-            data = resp.json()
-            raw_text = data["candidates"][0]["content"]["parts"][0]["text"]
-            clean_json = re.sub(r"^```json\s*|^```\s*|```$", "", raw_text.strip(), flags=re.MULTILINE)
-            return json.loads(clean_json)
-        return {
-            "score": 7,
-            "critique": ["Model busy during review. Ensure all dimensions include metric units (mm)."],
-            "improved_prompt": req.prompt
-        }
-    except Exception as e:
-        return {
-            "score": 7,
-            "critique": [f"Review skipped: {str(e)}"],
-            "improved_prompt": req.prompt
-        }
+    return {"status": "online", "engine": "OpenCASCADE / CadQuery"}
 
 @app.post("/api/generate")
-def generate_cad(req: GenerateRequest):
-    if not req.prompt.strip():
-        raise HTTPException(status_code=400, detail="Prompt cannot be empty.")
-    
+async def generate_solid(req: GenerateRequest):
+    code = call_gemini(req.prompt)
     session_id = str(uuid.uuid4())[:8]
-    code_str = kernel.call_gemini(req.prompt)
-    
-    stl_path, step_path, telemetry = kernel.compile_to_files(code_str, session_id)
-    if not stl_path:
-        raise HTTPException(status_code=500, detail="OpenCASCADE compilation failed.")
-    
-    extracted_params = kernel.extract_params_from_code(code_str)
-    sessions[session_id] = {
-        "code": code_str,
-        "params": extracted_params
-    }
+    stl_path, step_path, telemetry = compile_to_files(code, session_id)
+    params = extract_params_from_code(code)
     
     return {
         "session_id": session_id,
+        "cadquery_code": code,
+        "parameters": params,
         "stl_url": f"/assets/{session_id}/part.stl",
         "step_url": f"/assets/{session_id}/part.step",
-        "params": extracted_params,
-        "code": code_str,
         "telemetry": telemetry
     }
 
-@app.post("/api/recompile")
-def recompile_cad(req: RecompileRequest):
-    sess = sessions.get(req.session_id)
-    if not sess:
-        raise HTTPException(status_code=404, detail="Session expired or not found. Please re-generate.")
-    
-    updated_code = kernel.inject_params(sess["code"], req.params)
-    stl_path, step_path, telemetry = kernel.compile_to_files(updated_code, req.session_id)
-    
-    if not stl_path:
-        return {"status": "error", "detail": "Recompilation failed with given parameters."}
-    
-    sess["params"] = req.params
-    sess["code"] = updated_code
-    
+@app.post("/api/update-params")
+async def update_params(req: ParamUpdateRequest):
+    new_code = inject_params(req.code, req.params)
+    stl_path, step_path, telemetry = compile_to_files(new_code, req.session_id)
     return {
-        "status": "success",
+        "session_id": req.session_id,
+        "cadquery_code": new_code,
         "stl_url": f"/assets/{req.session_id}/part.stl",
+        "step_url": f"/assets/{req.session_id}/part.step",
         "telemetry": telemetry
     }
 
+@app.post("/api/analyze-prompt")
+@app.post("/api/audit-prompt")
+async def audit_endpoint(request: Request):
+    try:
+        body = await request.json()
+        raw_prompt = body.get("prompt", "")
+    except Exception:
+        raw_prompt = ""
+
+    if not raw_prompt:
+        return {"audited_prompt": "Please specify length, width, thickness, and hole diameters."}
+
+    refined = audit_gemini(raw_prompt)
+    return {"audited_prompt": refined}
