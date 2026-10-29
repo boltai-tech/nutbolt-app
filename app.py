@@ -69,8 +69,25 @@ async def audit_endpoint(request: Request):
     except Exception:
         raw_prompt = ""
 
+    if not raw_prompt.strip():
+        return {
+            "score": 3,
+            "critique": ["Prompt is empty", "Add part dimensions (L, W, H) and feature sizes"],
+            "improved_prompt": "Rectangular mounting plate 80x50x5mm with 10mm center hole"
+        }
+
+    return audit_gemini(raw_prompt)
+@app.post("/api/audit-prompt")
+async def audit_endpoint(request: Request):
+    try:
+        body = await request.json()
+        raw_prompt = body.get("prompt", "")
+    except Exception:
+        raw_prompt = ""
+
     if not raw_prompt:
         return {"audited_prompt": "Please specify length, width, thickness, and hole diameters."}
 
     refined = audit_gemini(raw_prompt)
     return {"audited_prompt": refined}
+

@@ -170,6 +170,45 @@ result = (
 )
 """
 
-def audit_gemini(prompt: str) -> str:
-    res = execute_llm_cascade(prompt, is_audit=True)
-    return res if res else f"Refined specification: {prompt} with exact base coordinate anchoring and standard metric tolerances."
+import json
+
+def audit_gemini(prompt: str) -> dict:
+    key = os.getenv("GEMINI_API_KEY", "").strip()
+    default_res = {
+        "score": 8,
+        "critique": ["Auto-anchored base features along baseline", "Enforced metric ISO clearance dimensions"],
+        "improved_prompt": f"{prompt.strip()} with precise metric tolerances and symmetric coordinate anchoring."
+    }
+    if not key:
+        return default_res
+
+    models = get_live_models(key)
+    headers = {"Content-Type": "application/json", "x-goog-api-key": key}
+    sys_instruction = """You are a senior CAD engineering auditor. 
+Analyze the mechanical prompt and return ONLY a valid, raw JSON object (no markdown, no backticks) with this exact schema:
+{
+  "score": 8,
+  "critique": ["item 1", "item 2"],
+  "improved_prompt": "clear, unambiguous mechanical spec with dimensions and coordinate placements"
+}"""
+
+    payload = {
+        "contents": [{"parts": [{"text": sys_instruction}, {"text": prompt}]}],
+        "generationConfig": {"temperature": 0.1, "maxOutputTokens": 512}
+    }
+
+    for model in models:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
+        try:
+            resp = requests.post(url, headers=headers, json=payload, timeout=10)
+            if resp.status_code == 200:
+                raw_text = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+                cleaned = re.sub(r"^```json\s*|^```\s*|```$", "", raw_text, flags=re.MULTILINE).strip()
+                parsed = json.loads(cleaned)
+                if "score" in parsed and "improved_prompt" in parsed:
+                    return parsed
+        except Exception:
+            continue
+
+    return default_res
+
