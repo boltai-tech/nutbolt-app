@@ -1,13 +1,13 @@
 ﻿import os
 import uuid
-from typing import Optional
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 from kernel import call_gemini, audit_gemini, compile_to_files, extract_params_from_code, inject_params
 
-app = FastAPI(title="Nutbolt CAD Engine")
+app = FastAPI(title="Nutbolt CAD Production Kernel")
 
 app.add_middleware(
     CORSMiddleware,
@@ -20,74 +20,77 @@ app.add_middleware(
 os.makedirs("assets", exist_ok=True)
 app.mount("/assets", StaticFiles(directory="assets"), name="assets")
 
-class GenerateRequest(BaseModel):
+class GenReq(BaseModel):
     prompt: str
 
-class ParamUpdateRequest(BaseModel):
+class UpdateReq(BaseModel):
     session_id: str
     code: str
     params: dict
 
 @app.get("/")
-def health_check():
-    return {"status": "online", "engine": "OpenCASCADE / CadQuery"}
+def health():
+    return {"status": "online", "engine": "CadQuery / OpenCASCADE"}
+
+@app.options("/{full_path:path}")
+async def preflight_handler():
+    return JSONResponse(status_code=200, content={"status": "ok"})
 
 @app.post("/api/generate")
-async def generate_solid(req: GenerateRequest):
-    code = call_gemini(req.prompt)
-    session_id = str(uuid.uuid4())[:8]
-    stl_path, step_path, telemetry = compile_to_files(code, session_id)
-    params = extract_params_from_code(code)
-    
-    return {
-        "session_id": session_id,
-        "cadquery_code": code,
-        "parameters": params,
-        "stl_url": f"/assets/{session_id}/part.stl",
-        "step_url": f"/assets/{session_id}/part.step",
-        "telemetry": telemetry
-    }
+async def generate(req: GenReq):
+    try:
+        code = call_gemini(req.prompt)
+        sid = str(uuid.uuid4())[:8]
+        stl_p, step_p, telemetry = compile_to_files(code, sid)
+        
+        if stl_p is None:
+            return JSONResponse(status_code=400, content={
+                "status": "error",
+                "detail": "Failed to compile generated CAD code into manifold 3D geometry."
+            })
+            
+        params = extract_params_from_code(code)
+        return {
+            "status": "success",
+            "session_id": sid,
+            "cadquery_code": code,
+            "parameters": params,
+            "stl_url": f"/assets/{sid}/part.stl",
+            "step_url": f"/assets/{sid}/part.step",
+            "telemetry": telemetry
+        }
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"status": "error", "detail": str(e)})
 
 @app.post("/api/update-params")
-async def update_params(req: ParamUpdateRequest):
-    new_code = inject_params(req.code, req.params)
-    stl_path, step_path, telemetry = compile_to_files(new_code, req.session_id)
-    return {
-        "session_id": req.session_id,
-        "cadquery_code": new_code,
-        "stl_url": f"/assets/{req.session_id}/part.stl",
-        "step_url": f"/assets/{req.session_id}/part.step",
-        "telemetry": telemetry
-    }
+async def update_params(req: UpdateReq):
+    try:
+        new_code = inject_params(req.code, req.params)
+        stl_p, step_p, telemetry = compile_to_files(new_code, req.session_id)
+        if stl_p is None:
+            return JSONResponse(status_code=400, content={
+                "status": "error", 
+                "detail": "Recompilation failed with updated parameters."
+            })
+        return {
+            "status": "success",
+            "session_id": req.session_id,
+            "cadquery_code": new_code,
+            "stl_url": f"/assets/{req.session_id}/part.stl",
+            "step_url": f"/assets/{req.session_id}/part.step",
+            "telemetry": telemetry
+        }
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"status": "error", "detail": str(e)})
 
 @app.post("/api/analyze-prompt")
 @app.post("/api/audit-prompt")
-async def audit_endpoint(request: Request):
+async def audit_route(request: Request):
     try:
         body = await request.json()
-        raw_prompt = body.get("prompt", "")
+        p = body.get("prompt", "")
     except Exception:
-        raw_prompt = ""
-
-    if not raw_prompt.strip():
-        return {
-            "score": 3,
-            "critique": ["Prompt is empty", "Add part dimensions (L, W, H) and feature sizes"],
-            "improved_prompt": "Rectangular mounting plate 80x50x5mm with 10mm center hole"
-        }
-
-    return audit_gemini(raw_prompt)
-@app.post("/api/audit-prompt")
-async def audit_endpoint(request: Request):
-    try:
-        body = await request.json()
-        raw_prompt = body.get("prompt", "")
-    except Exception:
-        raw_prompt = ""
-
-    if not raw_prompt:
-        return {"audited_prompt": "Please specify length, width, thickness, and hole diameters."}
-
-    refined = audit_gemini(raw_prompt)
-    return {"audited_prompt": refined}
-
+        p = ""
+        
+    audit_data = audit_gemini(p)
+    return JSONResponse(content=audit_data)

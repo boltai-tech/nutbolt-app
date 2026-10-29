@@ -1,6 +1,7 @@
 ﻿import os
 import re
 import ast
+import json
 import requests
 import cadquery as cq
 from cadquery import exporters
@@ -8,49 +9,25 @@ from cadquery import exporters
 SYSTEM_PROMPT = """You are a Principal Computational CAD Engineer specializing in OpenCASCADE and CadQuery Python.
 Translate natural language specifications into an exact, watertight, single-body manifold CadQuery 3D model.
 
-CRITICAL FEATURE RETENTION & ACCURACY:
-1. Wrap all dimensions at the top in `params = {...}` using standard numeric values.
-2. Assign the final CadQuery object to variable `result`.
-3. Do NOT import cadquery (injected as `cq`). Raw Python code ONLY, no markdown, no comments.
-4. GEOMETRIC ANCHORING RULES:
-   - "Central / pilot bore": Centered at (0, 0) on the XY plane.
-   - "Motor bolt pattern / Pitch circle": Centered at (0, 0) surrounding the central bore.
-   - "Base mounting holes / Foot holes": Placed along the lower baseline offset (e.g. y = -(length/2 - margin)), NEVER on the center line unless specifically requested.
-   - For plates and brackets: Use symmetrical .pushPoints() coordinate tuples.
-5. OPTIMIZATION: Keep code concise (<35 lines). Use direct primitives (.box(), .circle().extrude()) and combined .pushPoints().hole().
+CRITICAL ARCHITECTURE RULES:
+1. Always parameterize every primary dimension at the top in a dictionary named `params`:
+params = {
+    "length": 100.0,
+    "width": 50.0,
+    "thickness": 5.0
+}
+2. The final 3D shape MUST be assigned to the variable named `result`.
+3. Output ONLY valid, executable Python code. Do NOT wrap in markdown fences (no ```python). No commentary.
+4. COORDINATE & FACE SELECTION RULES:
+   - Global Origin: Place the center of mass or symmetric center at (0, 0, 0) whenever possible using `centered=(True, True, False)`.
+   - Bores / Pilot Holes: Center them at (0, 0) on the target face workplane.
+   - Distinct Faces: When selecting faces on multi-feature parts (like L-brackets or stepped blocks):
+     * To select the horizontal base top face: `.faces(">Z[-2]")` or create individual solids and `.union()`.
+     * To select the upright vertical face: `.faces(">Y")` or `.faces(">X")`.
+     * Never chain multiple `.faces().workplane().hole()` if face orientation is ambiguous; instead, create secondary cutter solids (`cq.Workplane(...).cylinder(...)`) and use `.cut()`.
+   - Multi-hole patterns: Use `.pushPoints([(-x, -y), (x, -y), ...]).hole(dia)`.
+5. Code must be concise, robust, and mathematically watertight.
 """
-
-CACHED_MODELS = []
-
-def get_live_models(key: str) -> list:
-    global CACHED_MODELS
-    if CACHED_MODELS:
-        return CACHED_MODELS
-
-    headers = {"Content-Type": "application/json", "x-goog-api-key": key}
-    url = f"https://generativelanguage.googleapis.com/v1beta/models?key={key}"
-
-    try:
-        resp = requests.get(url, headers=headers, timeout=8)
-        if resp.status_code == 200:
-            data = resp.json().get("models", [])
-            usable = [m.get("name", "").replace("models/", "") for m in data if "generateContent" in m.get("supportedGenerationMethods", [])]
-            priority = ["3.8-flash", "3.6-flash", "3.5-flash-lite", "3.1-flash-lite", "flash"]
-            sorted_models = []
-            for p in priority:
-                for u in usable:
-                    if p in u and u not in sorted_models:
-                        sorted_models.append(u)
-            for u in usable:
-                if u not in sorted_models:
-                    sorted_models.append(u)
-            if sorted_models:
-                CACHED_MODELS = sorted_models
-                return CACHED_MODELS
-    except Exception as e:
-        print(f"[Model Discovery Error]: {e}")
-
-    return ["gemini-3.8-flash", "gemini-3.6-flash", "gemini-3.5-flash-lite"]
 
 def extract_params_from_code(code_str: str) -> dict:
     try:
@@ -61,37 +38,41 @@ def extract_params_from_code(code_str: str) -> dict:
                     if isinstance(target, ast.Name) and target.id == "params":
                         return ast.literal_eval(node.value)
     except Exception as e:
-        print(f"[AST Error]: {e}")
+        print(f"[AST Parse Error]: {e}")
     return {}
 
 def inject_params(code_str: str, new_params: dict) -> str:
     pattern = r"params\s*=\s*\{[^\}]*\}"
-    formatted = "params = {\n" + ",\n".join(f'    "{k}": {v}' for k, v in new_params.items()) + "\n}"
+    items = []
+    for k, v in new_params.items():
+        try:
+            val = float(v)
+        except (ValueError, TypeError):
+            val = v
+        items.append(f'    "{k}": {val}')
+    formatted = "params = {\n" + ",\n".join(items) + "\n}"
     return re.sub(pattern, formatted, code_str, count=1)
 
-def validate_and_compile(code_str: str) -> bool:
-    exec_scope = {"cq": cq}
-    try:
-        exec(code_str, exec_scope)
-        return exec_scope.get("result") is not None
-    except Exception:
-        return False
+def execute_cq(code_str: str):
+    scope = {"cq": cq}
+    exec(code_str, scope)
+    res = scope.get("result")
+    if res is None:
+        raise ValueError("Script did not assign output to 'result'.")
+    val = res.val()
+    if val is None or val.Volume() <= 0:
+        raise ValueError("CadQuery generated an empty or non-manifold volume.")
+    return res
 
 def compile_to_files(code_str: str, session_id: str):
-    exec_scope = {"cq": cq}
     try:
-        exec(code_str, exec_scope)
-        res = exec_scope.get("result")
-        if res is None:
-            return None, None, None
-
+        res = execute_cq(code_str)
         out_dir = os.path.join("assets", session_id)
         os.makedirs(out_dir, exist_ok=True)
 
         stl_path = os.path.join(out_dir, "part.stl")
         step_path = os.path.join(out_dir, "part.step")
 
-        # Fast tessellation tolerance (cuts mesh calculation time by ~60%)
         exporters.export(res, stl_path, exporters.ExportTypes.STL, tolerance=0.2, angularTolerance=0.2)
         exporters.export(res, step_path, exporters.ExportTypes.STEP)
 
@@ -104,111 +85,109 @@ def compile_to_files(code_str: str, session_id: str):
         }
         return stl_path, step_path, telemetry
     except Exception as e:
-        print(f"[Export Error]: {e}")
+        print(f"[CAD Engine Error]: {e}")
         return None, None, None
 
-def execute_llm_cascade(prompt_text: str, is_audit: bool = False) -> str:
+def call_gemini(prompt: str) -> str:
     key = os.getenv("GEMINI_API_KEY", "").strip()
     if not key:
-        return ""
+        raise ValueError("GEMINI_API_KEY is not set.")
 
-    models = get_live_models(key)
     headers = {"Content-Type": "application/json", "x-goog-api-key": key}
-
-    user_msg = prompt_text if is_audit else f"Engineering Specification: {prompt_text}\nGenerate raw CadQuery code."
-    sys_instruction = "You are a senior CAD engineer. Audit this prompt, eliminate ambiguity, and specify coordinates for all holes and features." if is_audit else SYSTEM_PROMPT
+    url = f"[https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=](https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=){key}"
 
     payload = {
-        "contents": [{"parts": [{"text": sys_instruction}, {"text": user_msg}]}],
-        "generationConfig": {
-            "temperature": 0.1,
-            "maxOutputTokens": 768
-        }
+        "contents": [
+            {"parts": [{"text": SYSTEM_PROMPT}, {"text": f"Engineering Specification:\n{prompt}\nGenerate executable CadQuery code."}]}
+        ],
+        "generationConfig": {"temperature": 0.1, "maxOutputTokens": 1024}
     }
 
-    for model in models:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
-        try:
-            resp = requests.post(url, headers=headers, json=payload, timeout=12)
-            if resp.status_code == 200:
-                data = resp.json()
-                candidates = data.get("candidates", [])
-                if candidates:
-                    text = candidates[0]["content"]["parts"][0]["text"].strip()
-                    if is_audit:
-                        return text
-                    clean_code = re.sub(r"^```python\s*|^```\s*|```$", "", text, flags=re.MULTILINE)
-                    if validate_and_compile(clean_code):
-                        return clean_code
-        except Exception:
-            continue
+    resp = requests.post(url, headers=headers, json=payload, timeout=12)
+    if resp.status_code != 200:
+        raise RuntimeError(f"Gemini API returned status {resp.status_code}: {resp.text}")
 
-    return ""
+    raw_text = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+    clean_code = re.sub(r"^```python\s*|^```\s*|```$", "", raw_text, flags=re.MULTILINE).strip()
 
-def call_gemini(prompt: str) -> str:
-    res = execute_llm_cascade(prompt, is_audit=False)
-    if res:
-        return res
-    # Symmetrical fallback plate
-    return """params = {
-    "size": 60.0,
-    "thickness": 4.0,
-    "pilot_dia": 24.0,
-    "bolt_pcd": 31.0,
-    "bolt_dia": 3.5
-}
-p = params["bolt_pcd"] / 2
-pts = [(p, p), (-p, p), (-p, -p), (p, -p)]
-result = (
-    cq.Workplane("XY")
-    .box(params["size"], params["size"], params["thickness"])
-    .faces(">Z").workplane()
-    .hole(params["pilot_dia"])
-    .faces(">Z").workplane()
-    .pushPoints(pts)
-    .hole(params["bolt_dia"])
-)
-"""
+    try:
+        execute_cq(clean_code)
+        return clean_code
+    except Exception as err:
+        print(f"[Self-Healing] Execution failed: {err}. Asking model to auto-correct...")
+        repair_payload = {
+            "contents": [
+                {"parts": [{"text": SYSTEM_PROMPT}, {"text": f"Engineering Specification:\n{prompt}"}]},
+                {"role": "model", "parts": [{"text": clean_code}]},
+                {"role": "user", "parts": [{"text": f"Your code failed compilation in OpenCASCADE with error: {str(err)}. Fix the code so it compiles cleanly into a solid single-body manifold."}]}
+            ],
+            "generationConfig": {"temperature": 0.1, "maxOutputTokens": 1024}
+        }
+        repair_resp = requests.post(url, headers=headers, json=repair_payload, timeout=12)
+        if repair_resp.status_code == 200:
+            repaired_text = repair_resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+            repaired_clean = re.sub(r"^```python\s*|^```\s*|```$", "", repaired_text, flags=re.MULTILINE).strip()
+            try:
+                execute_cq(repaired_clean)
+                return repaired_clean
+            except Exception as final_err:
+                print(f"[Self-Healing Failed]: {final_err}")
 
-import json
+        return clean_code
 
 def audit_gemini(prompt: str) -> dict:
     key = os.getenv("GEMINI_API_KEY", "").strip()
-    default_res = {
-        "score": 8,
-        "critique": ["Auto-anchored base features along baseline", "Enforced metric ISO clearance dimensions"],
-        "improved_prompt": f"{prompt.strip()} with precise metric tolerances and symmetric coordinate anchoring."
-    }
     if not key:
-        return default_res
+        return {
+            "score": 0,
+            "critique": ["Missing GEMINI_API_KEY on server."],
+            "improved_prompt": prompt
+        }
 
-    models = get_live_models(key)
     headers = {"Content-Type": "application/json", "x-goog-api-key": key}
-    sys_instruction = """You are a senior CAD engineering auditor. 
-Analyze the mechanical prompt and return ONLY a valid, raw JSON object (no markdown, no backticks) with this exact schema:
+    url = f"[https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=](https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=){key}"
+
+    audit_sys = """You are an expert Mechanical Design Engineer & CAD Auditor.
+Analyze the user's CAD request. Return a genuine, rigorous mechanical critique.
+Identify:
+1. Ambiguous face or coordinate references.
+2. Missing engineering dimensions (thickness, clearance tolerances, PCD).
+3. Manufacturability risks.
+
+You MUST respond with valid JSON matching this schema:
 {
-  "score": 8,
-  "critique": ["item 1", "item 2"],
-  "improved_prompt": "clear, unambiguous mechanical spec with dimensions and coordinate placements"
-}"""
+  "score": <integer from 1 to 10>,
+  "critique": ["<specific issue 1>", "<specific issue 2>", ...],
+  "improved_prompt": "<fully specified, unambiguous engineering prompt with explicit coordinate datums>"
+}
+"""
 
     payload = {
-        "contents": [{"parts": [{"text": sys_instruction}, {"text": prompt}]}],
-        "generationConfig": {"temperature": 0.1, "maxOutputTokens": 512}
+        "contents": [
+            {"parts": [{"text": audit_sys}, {"text": f"Audit this CAD prompt:\n{prompt}"}]}
+        ],
+        "generationConfig": {
+            "temperature": 0.2,
+            "maxOutputTokens": 512,
+            "responseMimeType": "application/json"
+        }
     }
 
-    for model in models:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
-        try:
-            resp = requests.post(url, headers=headers, json=payload, timeout=10)
-            if resp.status_code == 200:
-                raw_text = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
-                cleaned = re.sub(r"^```json\s*|^```\s*|```$", "", raw_text, flags=re.MULTILINE).strip()
-                parsed = json.loads(cleaned)
-                if "score" in parsed and "improved_prompt" in parsed:
-                    return parsed
-        except Exception:
-            continue
+    try:
+        resp = requests.post(url, headers=headers, json=payload, timeout=10)
+        if resp.status_code == 200:
+            raw = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+            data = json.loads(raw)
+            if "score" in data and "critique" in data and "improved_prompt" in data:
+                return data
+    except Exception as e:
+        print(f"[Audit Engine Error]: {e}")
 
-    return default_res
-
+    return {
+        "score": 5,
+        "critique": [
+            "Network timeout during deep CAD spec analysis.",
+            "Verify all hole positions specify explicit offsets from edges."
+        ],
+        "improved_prompt": prompt
+    }
