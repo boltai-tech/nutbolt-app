@@ -1,22 +1,29 @@
+﻿import ast
+import math
 import os
 import re
-import ast
-import math
-import requests
+
 import cadquery as cq
 from cadquery import exporters
+import requests
 
 SYSTEM_PROMPT = """You are a Principal CAD Engineer writing CadQuery Python scripts.
-Output ONLY executable Python code. No markdown fences (no ```python), no comments.
+Output ONLY executable Python code. No markdown fences, no comments.
 
 RULES:
-1. Declare dimensions in `params = {...}` at the top.
-2. Assign final CadQuery object to `result`.
-3. NO FLOATING PARTS:
-   - Never use multiple .box() calls with .translate().
-   - For L-brackets, U-channels, angles: draw a 2D closed profile on Workplane("XZ") using .polyline([...]).close().extrude(width).
-   - For plates, flanges, spacers: use a single .box() or .circle().extrude().
-   - Cut holes using .faces(">Z").workplane().pushPoints([...]).hole(d) or .faces("<Y").workplane().hole(d). """ - def extract_params_from_code(code_str: str)> dict:
+1. First statement must be params = {...}
+2. Final object must be assigned to result.
+3. Use only valid CadQuery Python.
+4. For L-brackets, U-channels, angles, and bent profiles:
+   - draw one closed 2D polygon on Workplane("XZ") using .polyline([...]).close().extrude()
+   - never emit disconnected floating slabs or multiple independent .box() pieces with .translate()
+5. For plates, flanges, spacers, sleeves, washers:
+   - use one closed profile or one .box() or one .circle().extrude()
+6. Holes must be cut with .faces(">Z").workplane().pushPoints([...]).hole(d) or .faces("<Y").workplane().hole(d)
+7. Return only Python code, nothing else.
+"""
+
+def extract_params_from_code(code_str: str) -> dict:
     try:
         tree = ast.parse(code_str)
         for node in tree.body:
@@ -33,6 +40,8 @@ def inject_params(code_str: str, new_params: dict) -> str:
     for k, v in new_params.items():
         try:
             val = float(v)
+            if float(val).is_integer():
+                val = int(val)
         except Exception:
             val = v
         lines.append(f'    "{k}": {val},')
@@ -47,6 +56,7 @@ def compile_to_files(code_str: str, session_id: str):
         res = scope.get("result")
         if res is None:
             return None, None, None
+
         val = res.val()
         if val is None or val.Volume() <= 0.001:
             return None, None, None
@@ -74,30 +84,47 @@ def call_gemini(prompt: str) -> str:
     if not key:
         return fallback_generator(prompt)
 
-    url = f"[https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=](https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=){key}"
-    headers = {"Content-Type": "application/json"}
-    payload = {
-        "contents": [{"parts": [{"text": SYSTEM_PROMPT + "\nPrompt: " + prompt}]}],
-        "generationConfig": {
-            "temperature": 0.1,
-            "maxOutputTokens": 600
-        }
-    }
+    models = ["gemini-1.5-flash", "gemini-2.5-flash"]
+    last_error = None
 
-    try:
-        resp = requests.post(url, headers=headers, json=payload, timeout=5.5)
-        if resp.status_code == 200:
-            raw = resp.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+    for model in models:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
+        payload = {
+            "contents": [{"parts": [{"text": SYSTEM_PROMPT + "\nPrompt: " + prompt}]}],
+            "generationConfig": {
+                "temperature": 0.1,
+                "maxOutputTokens": 600,
+                "responseMimeType": "text/plain"
+            }
+        }
+
+        if "2.5" in model:
+            payload["thinkingConfig"] = {"thinkingBudget": 0}
+
+        try:
+            resp = requests.post(url, json=payload, timeout=5.5)
+            if resp.status_code != 200:
+                last_error = resp.text
+                continue
+
+            data = resp.json()
+            candidates = data.get("candidates", [])
+            if not candidates:
+                continue
+
+            raw = candidates[0].get("content", {}).get("parts", [{}])[0].get("text", "").strip()
             clean = re.sub(r"^```python\s*|^```\s*|```$", "", raw, flags=re.MULTILINE).strip()
             if "result" in clean and "params" in clean:
                 return clean
-    except Exception as e:
-        print(f"[Fast API timeout/skip, using instant geometry kernel]: {e}")
+        except Exception as exc:
+            last_error = str(exc)
 
+    print(f"[Gemini fallback]: {last_error or 'No valid model response'}")
     return fallback_generator(prompt)
 
 def fallback_generator(prompt: str) -> str:
     p = prompt.lower()
+
     if "u-channel" in p or "channel" in p:
         return """params = {
     "width": 80.0,
@@ -115,6 +142,7 @@ result = (
     .hole(params["hole_dia"])
 )
 """
+
     if "bushing" in p or "spacer" in p or "sleeve" in p:
         return """params = {
     "outer_dia": 40.0,
@@ -128,7 +156,8 @@ result = (
     .extrude(params["height"])
 )
 """
-    if "bracket" in p or "l-shape" in p:
+
+    if "bracket" in p or "l-shape" in p or "angle" in p:
         return """params = {
     "width": 50.0,
     "base_length": 60.0,
@@ -161,6 +190,7 @@ result = (
     .hole(params["base_hole"])
 )
 """
+
     if "flange" in p or "pipe" in p or "cylinder" in p:
         return """params = {
     "outer_dia": 90.0,
@@ -177,6 +207,7 @@ result = (
     .faces(">Z").workplane().pushPoints(bolt_pts).hole(params["hole_dia"])
 )
 """
+
     return """params = {
     "width": 60.0,
     "length": 60.0,
