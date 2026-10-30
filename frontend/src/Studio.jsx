@@ -84,14 +84,14 @@ export const MATERIALS = {
 const ICON = { params: SlidersHorizontal, code: Code, mass: Scale };
 
 function highlight(code) {
-  const esc = code
+  const esc = (code || "")
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;");
 
   return esc.replace(
     /(#.*$)|("[^"\n]*"|'[^'\n]*')|\b(import|from|as|def|return|for|in|if|else|True|False|None)\b|\b(\d+\.?\d*)\b/gm,
-    (m, c, s, k, n) =>
+    (m, c, s, k) =>
       c
         ? `<span class="c">${m}</span>`
         : s
@@ -788,3 +788,4 @@ export default function Studio() {
     </div>
   );
 }
+
