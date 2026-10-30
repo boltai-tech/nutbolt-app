@@ -1,13 +1,13 @@
-﻿import React from "react";
+import React from "react";
 import ReactDOM from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
-import Studio from "./Studio.jsx";
+import App from "./App.jsx";
 import "./styles.css";
 
 ReactDOM.createRoot(document.getElementById("root")).render(
   <React.StrictMode>
     <BrowserRouter>
-      <Studio />
+      <App />
     </BrowserRouter>
   </React.StrictMode>
 );
