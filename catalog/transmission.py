@@ -6,18 +6,21 @@ def match(prompt: str) -> str:
     p = prompt.lower()
 
     # 1. GT2 Timing Belt Pulley
-    if "gt2" in p or ("timing" in p and "pulley" in p):
+    if "gt2" in p or ("timing" in p and "pulley" in p) or ("belt" in p and "pulley" in p):
         teeth = 20
         bore = 5.0
+        belt = 7.0
         m_t = re.search(r"(\d+)\s*(?:t|tooth|teeth)", p)
         if m_t: teeth = int(m_t.group(1))
         m_b = re.search(r"(\d+(?:\.\d+)?)\s*(?:mm)?\s*(?:bore|shaft)", p)
         if m_b: bore = float(m_b.group(1))
+        m_w = re.search(r"(\d+(?:\.\d+)?)\s*(?:mm)?\s*(?:width|belt)", p)
+        if m_w: belt = float(m_w.group(1))
 
         return f"""params = {{
     "teeth": {teeth},
     "bore_dia": {bore},
-    "belt_width": 7.0,
+    "belt_width": {belt},
     "flange_dia": 18.0,
     "flange_thick": 1.2
 }}
@@ -25,20 +28,37 @@ n = int(params["teeth"])
 pitch = 2.0
 pitch_dia = (n * pitch) / math.pi
 root_dia = pitch_dia - 0.764
-th = params["belt_width"]
 fl_d = max(params["flange_dia"], pitch_dia + 3.0)
 fl_t = params["flange_thick"]
+bw = params["belt_width"]
+total_h = fl_t * 2.0 + bw
 
-base_hub = cq.Workplane("XY").circle(root_dia / 2.0).extrude(th)
-flange_bot = cq.Workplane("XY").workplane(offset=-fl_t).circle(fl_d / 2.0).extrude(fl_t)
-flange_top = cq.Workplane("XY").workplane(offset=th).circle(fl_d / 2.0).extrude(fl_t)
-bore = cq.Workplane("XY").workplane(offset=-fl_t - 1).circle(params["bore_dia"] / 2.0).extrude(th + fl_t*2 + 2)
+# 1. Solid cylinder encompassing the entire outer diameter and flanges
+body = cq.Workplane("XY").circle(fl_d / 2.0).extrude(total_h)
 
-# Teeth cuts
-tooth_pts = [( (pitch_dia/2.0) * math.cos(2*math.pi*i/n), (pitch_dia/2.0) * math.sin(2*math.pi*i/n) ) for i in range(min(n, 24))]
-teeth_cut = cq.Workplane("XY").workplane(offset=-1).pushPoints(tooth_pts).circle(0.65).extrude(th + 2)
+# 2. Central shaft bore
+bore = cq.Workplane("XY").workplane(offset=-1).circle(params["bore_dia"] / 2.0).extrude(total_h + 2.0)
 
-result = base_hub.union(flange_bot).union(flange_top).cut(bore).cut(teeth_cut)
+# 3. Cut the belt recess between the top and bottom flanges
+groove = (
+    cq.Workplane("XY")
+    .workplane(offset=fl_t)
+    .circle((fl_d + 4.0) / 2.0)
+    .circle(root_dia / 2.0)
+    .extrude(bw)
+)
+
+# 4. Cut the 20 tooth grooves into the pitch diameter
+pts = [( (pitch_dia/2.0) * math.cos(2*math.pi*i/n), (pitch_dia/2.0) * math.sin(2*math.pi*i/n) ) for i in range(n)]
+teeth_cut = (
+    cq.Workplane("XY")
+    .workplane(offset=fl_t - 0.5)
+    .pushPoints(pts)
+    .circle(0.65)
+    .extrude(bw + 1.0)
+)
+
+result = body.cut(bore).cut(groove).cut(teeth_cut)
 """
 
     # 2. Parametric Spur Gear / Pinion
@@ -65,7 +85,6 @@ body = cq.Workplane("XY").circle(outer_dia / 2.0).extrude(w)
 bore = cq.Workplane("XY").workplane(offset=-1).circle(params["bore_dia"] / 2.0).extrude(w + 2)
 keyway = cq.Workplane("XY").workplane(offset=-1).pushPoints([(0, params["bore_dia"] / 2.0)]).rect(params["keyway_width"], 3.0).extrude(w + 2)
 
-# Radial tooth space cuts
 r = (pitch_dia + root_dia) / 4.0
 pts = [(r * math.cos(2*math.pi*i/n), r * math.sin(2*math.pi*i/n)) for i in range(min(n, 20))]
 tooth_cuts = cq.Workplane("XY").workplane(offset=-1).pushPoints(pts).circle(m * 0.78).extrude(w + 2)
@@ -131,7 +150,7 @@ result = body.cut(bore).cut(scallops)
 od, th = params["outer_dia"], params["thickness"]
 r = od / 2.0
 body = cq.Workplane("XY").circle(r).extrude(th)
-bore = cq.Workplane("XY").workplane(offset=-1).circle(params["bore_dia"] / 2.0).extrude(th + 2)
+bore = cq.Workplane("XY").workplane(offset=-1).circle(params["drive_bore"] / 2.0).extrude(th + 2)
 slot_x = cq.Workplane("XY").workplane(offset=-1).rect(od + 2, params["slot_width"]).extrude(th + 2)
 slot_y = cq.Workplane("XY").workplane(offset=-1).rect(params["slot_width"], od + 2).extrude(th + 2)
 
