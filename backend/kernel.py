@@ -82,6 +82,7 @@ def compile_to_files(code_str: str, session_id: str):
 def call_gemini(prompt: str) -> str:
     key = os.getenv("GEMINI_API_KEY", "").strip()
     if not key:
+        print("[Gemini] GEMINI_API_KEY missing/empty — triggering fallback.")
         return fallback_generator(prompt)
 
     models = ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
