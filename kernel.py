@@ -155,7 +155,7 @@ def _call_gemini_raw(prompt_text: str, diagnostic_context: Optional[str] = None)
         contents.append({"role": "user", "parts": [{"text": f"FIX KERNEL ERROR:\n{diagnostic_context}\nOutput ONLY valid python."}]})
 
     for model in MODELS:
-        url = f"[https://generativelanguage.googleapis.com/v1beta/models/](https://generativelanguage.googleapis.com/v1beta/models/){model}:generateContent"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
         payload = {
             "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
             "contents": contents,

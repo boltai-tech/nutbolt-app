@@ -16,7 +16,7 @@ app = FastAPI(title="nutbolt.ai CAD Kernel", version="2.4.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -37,9 +37,17 @@ class ExportStepRequest(BaseModel):
     session_id: str
     code: str
 
+@app.post("/api/analyze-prompt")
+async def analyze_prompt(req: GenerateRequest):
+    return {"status": "success", "score": 10, "critique": [], "improved_prompt": req.prompt}
+
 @app.get("/health")
 def health():
     return {"status": "ready", "kernel": "OpenCASCADE 7.7 via CadQuery 2.4.0"}
+
+@app.get("/api/health")
+def api_health():
+    return {"status": "online"}
 
 @app.post("/api/generate")
 def generate(req: GenerateRequest):

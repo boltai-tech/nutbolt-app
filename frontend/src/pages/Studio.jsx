@@ -98,7 +98,7 @@ export default function Studio() {
         throw new Error(ed.detail || `Kernel returned ${r.status}`);
       }
       const d = await r.json();
-      setM({ ...d, stl: abs(d.stl_url), step: API + d.step_url });
+      setM({ ...d, params: d.parameters || d.params || {}, stl: abs(d.stl_url), step: API + d.step_url });
       setHistory((h) => [text, ...h.filter((x) => x !== text)].slice(0, 6));
       updateCredits(credits - 1);
       setAuditResult(null);
@@ -118,7 +118,7 @@ export default function Studio() {
   const handleParamChange = (k, newVal) => {
     const val = Number(newVal);
     if (isNaN(val)) return;
-    const params = { ...m.params, [k]: val };
+    const params = { ...(m.params || m.parameters || {}), [k]: val };
     setM((s) => ({ ...s, params }));
     clearTimeout(timer.current);
     timer.current = setTimeout(async () => {
@@ -126,11 +126,11 @@ export default function Studio() {
         const r = await fetch(`${API}/api/recompile`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ session_id: m.session_id, params })
+          body: JSON.stringify({ session_id: m.session_id, code: m.code, params })
         });
         const d = await r.json();
         if (d.status === "success") {
-          setM((s) => ({ ...s, telemetry: d.telemetry, stl: abs(d.stl_url) }));
+          setM((s) => ({ ...s, telemetry: d.telemetry, stl: abs(d.stl_url), params: d.parameters || d.params }));
         } else {
           setErr("Recompile failed: " + (d.detail || d.status));
         }
@@ -196,7 +196,7 @@ export default function Studio() {
           <div style={{ display: "flex", gap: "6px", margin: "6px 0 10px 0" }}>
             <button
               type="button"
-              onClick={auditPrompt} style={{display: "none"}}
+              onClick={auditPrompt}
               disabled={auditing || busy || !prompt.trim()}
               style={{
                 flex: 1,

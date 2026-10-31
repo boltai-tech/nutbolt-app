@@ -84,7 +84,7 @@ def call_gemini(prompt: str) -> str:
     if not key:
         return fallback_generator(prompt)
 
-    models = ["gemini-1.5-flash", "gemini-2.5-flash"]
+    models = ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
     last_error = None
 
     for model in models:
