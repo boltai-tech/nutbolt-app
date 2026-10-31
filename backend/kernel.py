@@ -106,6 +106,7 @@ def call_gemini(prompt: str) -> str:
             resp = requests.post(url, json=payload, timeout=5.5)
             if resp.status_code != 200:
                 last_error = resp.text
+                print(f"[Gemini] status={resp.status_code} body={resp.text}")
                 continue
 
             data = resp.json()
@@ -119,6 +120,7 @@ def call_gemini(prompt: str) -> str:
                 return clean
         except Exception as exc:
             last_error = str(exc)
+            print(f"[Gemini Error]: {exc}")
 
     print(f"[Gemini fallback]: {last_error or 'No valid model response'}")
     return fallback_generator(prompt)

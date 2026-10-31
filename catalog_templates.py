@@ -172,7 +172,7 @@ result = MechanicalBuilder.turned_concentric(
 """
 
     # 5. Pipe / Tube Flange (skip flanged pulleys / couplers / clutches — let LLM handle those)
-    if "flange" in p and not any(w in p for w in ("pulley", "clutch", "coupler", "gear", "transmission", "motor")):
+    if "flange" in p and not any(w in p for w in ("pulley", "clutch", "coupler", "gear", "transmission", "motor", "housing", "body", "bearing")):
         od, bore = 90.0, 30.0
         m_od = re.search(r"(\d+(?:\.\d+)?)\s*(?:mm)?\s*(?:outer|dia)", p)
         if m_od: od = float(m_od.group(1))

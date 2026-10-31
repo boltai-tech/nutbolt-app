@@ -141,6 +141,8 @@ export default function CadViewport({ stlUrl, stepUrl, busy }) {
           envMapIntensity: 1.3
         })
       );
+      // CAD solids are Z-up; Three.js viewport is Y-up -> align so parts rest correctly
+      mesh.rotation.x = -Math.PI / 2;
       mesh.castShadow = true;
       mesh.receiveShadow = true;
 
