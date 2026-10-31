@@ -24,22 +24,36 @@ def match_catalog_template(prompt: str) -> str:
     "slot_depth": 4.5,
     "core_bore": 4.2
 }}
-w, h, l = params["width"], params["height"], params["length"]
-so, si, sd, cb = params["slot_open"], params["slot_internal"], params["slot_depth"], params["core_bore"]
+w = params["width"]
+h = params["height"]
+l = params["length"]
+so = params["slot_open"]
+si = params["slot_internal"]
+sd = params["slot_depth"]
+cb = params["core_bore"]
 
+# Solid base body
 body = cq.Workplane("XY").box(w, h, l)
+
+# Center core through-bore
 core = cq.Workplane("XY").workplane(offset=-l/2.0 - 1.0).circle(cb / 2.0).extrude(l + 2.0)
 
-t_tb = cq.Workplane("XY").workplane(offset=-l/2.0 - 1.0).pushPoints([(0, h/2.0), (0, -h/2.0)]).rect(so, sd * 2.0).extrude(l + 2.0)
-cav_tb = cq.Workplane("XY").workplane(offset=-l/2.0 - 1.0).pushPoints([(0, h/2.0 - sd/2.0), (0, -h/2.0 + sd/2.0)]).rect(si, sd).extrude(l + 2.0)
+# Top and Bottom slots along X-faces
+pts_top_bot = [(0.0, h / 2.0), (0.0, -h / 2.0)]
+t_tb = cq.Workplane("XY").workplane(offset=-l/2.0 - 1.0).pushPoints(pts_top_bot).rect(so, sd * 2.0).extrude(l + 2.0)
+pts_cav_tb = [(0.0, h / 2.0 - sd / 2.0), (0.0, -h / 2.0 + sd / 2.0)]
+cav_tb = cq.Workplane("XY").workplane(offset=-l/2.0 - 1.0).pushPoints(pts_cav_tb).rect(si, sd).extrude(l + 2.0)
 
-t_s = cq.Workplane("XY").workplane(offset=-l/2.0 - 1.0).pushPoints([(w/2.0, 0), (-w/2.0, 0)]).rect(sd * 2.0, so).extrude(l + 2.0)
-cav_s = cq.Workplane("XY").workplane(offset=-l/2.0 - 1.0).pushPoints([(w/2.0 - sd/2.0, 0), (-w/2.0 + sd/2.0, 0)]).rect(sd, si).extrude(l + 2.0)
+# Side slots along Y-faces
+pts_sides = [(w / 2.0, 0.0), (-w / 2.0, 0.0)]
+t_s = cq.Workplane("XY").workplane(offset=-l/2.0 - 1.0).pushPoints(pts_sides).rect(sd * 2.0, so).extrude(l + 2.0)
+pts_cav_s = [(w / 2.0 - sd / 2.0, 0.0), (-w / 2.0 + sd / 2.0, 0.0)]
+cav_s = cq.Workplane("XY").workplane(offset=-l/2.0 - 1.0).pushPoints(pts_cav_s).rect(sd, si).extrude(l + 2.0)
 
 result = body.cut(core).cut(t_tb).cut(cav_tb).cut(t_s).cut(cav_s)
 """
 
-    # 2. GT2 Timing Belt Pulley (Single Continuous Hub Solid)
+    # 2. GT2 Timing Belt Pulley (Revolved Single-Solid Hub with Tooth Cuts)
     if "gt2" in p or ("timing" in p and "pulley" in p) or ("belt" in p and "pulley" in p):
         teeth = 20
         bore = 5.0
@@ -61,34 +75,37 @@ result = body.cut(core).cut(t_tb).cut(cav_tb).cut(t_s).cut(cav_s)
 n = int(params["teeth"])
 pitch = 2.0
 pitch_dia = (n * pitch) / math.pi
-root_dia = pitch_dia - 0.764
 fl_d = max(params["flange_dia"], pitch_dia + 3.0)
 fl_t = params["flange_thick"]
 bw = params["belt_width"]
 total_h = fl_t * 2.0 + bw
 
-# Continuous center hub spanning full height
-body_core = cq.Workplane("XY").circle(pitch_dia / 2.0).extrude(total_h)
+r_bore = params["bore_dia"] / 2.0
+r_hub = pitch_dia / 2.0
+r_fl = fl_d / 2.0
 
-# Overlapping bottom and top flanges
-flange_bot = cq.Workplane("XY").circle(fl_d / 2.0).extrude(fl_t)
-flange_top = cq.Workplane("XY").workplane(offset=fl_t + bw).circle(fl_d / 2.0).extrude(fl_t)
-body = body_core.union(flange_bot).union(flange_top)
+pts = [
+    (r_bore, 0.0),
+    (r_fl, 0.0),
+    (r_fl, fl_t),
+    (r_hub, fl_t),
+    (r_hub, fl_t + bw),
+    (r_fl, fl_t + bw),
+    (r_fl, total_h),
+    (r_bore, total_h)
+]
+body = cq.Workplane("XZ").polyline(pts).close().revolve()
 
-# Bore cut
-bore_cut = cq.Workplane("XY").workplane(offset=-1.0).circle(params["bore_dia"] / 2.0).extrude(total_h + 2.0)
-
-# Tooth cuts into center hub
-pts = [((pitch_dia / 2.0) * math.cos(2 * math.pi * i / n), (pitch_dia / 2.0) * math.sin(2 * math.pi * i / n)) for i in range(n)]
+pts_teeth = [((r_hub) * math.cos(2 * math.pi * i / n), (r_hub) * math.sin(2 * math.pi * i / n)) for i in range(n)]
 teeth_cut = (
     cq.Workplane("XY")
-    .workplane(offset=fl_t - 0.2)
-    .pushPoints(pts)
+    .workplane(offset=fl_t - 0.1)
+    .pushPoints(pts_teeth)
     .circle(0.65)
-    .extrude(bw + 0.4)
+    .extrude(bw + 0.2)
 )
 
-result = body.cut(bore_cut).cut(teeth_cut)
+result = body.cut(teeth_cut)
 """
 
     # 3. NEMA Stepper Motor Mount Plate
@@ -107,7 +124,9 @@ result = body.cut(bore_cut).cut(teeth_cut)
     "hole_pitch": {pitch},
     "screw_dia": {screw}
 }}
-pl, pw, t = params["plate_length"], params["plate_width"], params["thickness"]
+pl = params["plate_length"]
+pw = params["plate_width"]
+t = params["thickness"]
 s = params["hole_pitch"] / 2.0
 
 result = MechanicalBuilder.prismatic_plate(
