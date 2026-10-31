@@ -93,7 +93,7 @@ def call_gemini(prompt: str) -> str:
             "contents": [{"parts": [{"text": SYSTEM_PROMPT + "\nPrompt: " + prompt}]}],
             "generationConfig": {
                 "temperature": 0.1,
-                "maxOutputTokens": 600,
+                "maxOutputTokens": 4000,
                 "responseMimeType": "text/plain"
             }
         }
