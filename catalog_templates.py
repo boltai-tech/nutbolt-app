@@ -1,4 +1,4 @@
-"""
+﻿"""
 Parametric Catalog Templates - Deterministic macro generator for standard industrial parts.
 """
 import math
@@ -39,7 +39,7 @@ cav_s = cq.Workplane("XY").workplane(offset=-l/2.0 - 1.0).pushPoints([(w/2.0 - s
 result = body.cut(core).cut(t_tb).cut(cav_tb).cut(t_s).cut(cav_s)
 """
 
-    # 2. GT2 Timing Belt Pulley
+    # 2. GT2 Timing Belt Pulley (Single Continuous Hub Solid)
     if "gt2" in p or ("timing" in p and "pulley" in p) or ("belt" in p and "pulley" in p):
         teeth = 20
         bore = 5.0
@@ -67,26 +67,28 @@ fl_t = params["flange_thick"]
 bw = params["belt_width"]
 total_h = fl_t * 2.0 + bw
 
-body = cq.Workplane("XY").circle(fl_d / 2.0).extrude(total_h)
-bore_cut = cq.Workplane("XY").workplane(offset=-1.0).circle(params["bore_dia"] / 2.0).extrude(total_h + 2.0)
-groove = (
-    cq.Workplane("XY")
-    .workplane(offset=fl_t)
-    .circle((fl_d + 4.0) / 2.0)
-    .circle(root_dia / 2.0)
-    .extrude(bw)
-)
+# Continuous center hub spanning full height
+body_core = cq.Workplane("XY").circle(pitch_dia / 2.0).extrude(total_h)
 
+# Overlapping bottom and top flanges
+flange_bot = cq.Workplane("XY").circle(fl_d / 2.0).extrude(fl_t)
+flange_top = cq.Workplane("XY").workplane(offset=fl_t + bw).circle(fl_d / 2.0).extrude(fl_t)
+body = body_core.union(flange_bot).union(flange_top)
+
+# Bore cut
+bore_cut = cq.Workplane("XY").workplane(offset=-1.0).circle(params["bore_dia"] / 2.0).extrude(total_h + 2.0)
+
+# Tooth cuts into center hub
 pts = [((pitch_dia / 2.0) * math.cos(2 * math.pi * i / n), (pitch_dia / 2.0) * math.sin(2 * math.pi * i / n)) for i in range(n)]
 teeth_cut = (
     cq.Workplane("XY")
-    .workplane(offset=fl_t - 0.5)
+    .workplane(offset=fl_t - 0.2)
     .pushPoints(pts)
     .circle(0.65)
-    .extrude(bw + 1.0)
+    .extrude(bw + 0.4)
 )
 
-result = body.cut(bore_cut).cut(groove).cut(teeth_cut)
+result = body.cut(bore_cut).cut(teeth_cut)
 """
 
     # 3. NEMA Stepper Motor Mount Plate
