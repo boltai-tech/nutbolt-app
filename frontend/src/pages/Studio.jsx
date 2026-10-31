@@ -1,556 +1,288 @@
-﻿import { useEffect, useRef, useState } from "react";
-import { Link, useSearchParams } from "react-router-dom";
-import { Sparkles, Copy, Check, SlidersHorizontal, Code, Scale, Zap, X, ShieldCheck, SearchCheck, CheckCircle } from "lucide-react";
-import CadViewport from "../components/CadViewport.jsx";
+import React, { useState, useRef, useCallback } from "react";
+import CadViewport from "../components/CadViewport";
+import { Download, Sliders, Code, Weight, RefreshCw, Sparkles, Layers } from "lucide-react";
 
-const API = "https://nutbolt-backend.onrender.com";
-const DENSITY = [
-  ["Aluminum 6061-T6", 2.70],
-  ["Titanium Grade 5", 4.43],
-  ["1018 Cold Rolled Steel", 7.87],
-  ["Carbon-Fiber PLA", 1.30]
-];
+const API_BASE = import.meta.env.VITE_API_URL || "";
 
-const ICON = { params: SlidersHorizontal, code: Code, mass: Scale };
-
-function highlight(code) {
-  const esc = code.replace(/&/g, "&amp;").replace(/</g, "&lt;");
-  return esc.replace(/(#.*$)|("[^"\n]*"|'[^'\n]*')|\b(import|from|as|def|return|for|in|if|else|True|False|None)\b|\b(\d+\.?\d*)\b/gm,
-    (m, c, s, k, n) => (c ? `<span class="c">${m}</span>` : s ? `<span class="s">${m}</span>` : k ? `<span class="k">${m}</span>` : `<span class="n">${m}</span>`));
-}
+const DENSITIES = {
+  steel: { name: "A36 Steel", g_cm3: 7.85, cost_kg: 1.2 },
+  aluminum: { name: "6061 Aluminum", g_cm3: 2.7, cost_kg: 4.5 },
+  brass: { name: "C360 Brass", g_cm3: 8.5, cost_kg: 8.0 },
+  copper: { name: "Pure Copper", g_cm3: 8.96, cost_kg: 9.5 },
+};
 
 export default function Studio() {
-  const [qs] = useSearchParams();
-  const [prompt, setPrompt] = useState(qs.get("prompt") || "");
-  const [history, setHistory] = useState([]);
-  const [tab, setTab] = useState("params");
-  const [busy, setBusy] = useState(false);
-  const [err, setErr] = useState("");
-  const [copied, setCopied] = useState(false);
-  const [m, setM] = useState(null);
-  const timer = useRef(null);
-  const auto = useRef(false);
+  const [prompt, setPrompt] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [stepLoading, setStepLoading] = useState(false);
+  const [activeTab, setActiveTab] = useState("params");
+  const [material, setMaterial] = useState("steel");
+  const [wireframe, setWireframe] = useState(false);
 
-  // Credit System
-  const [credits, setCredits] = useState(5);
-  const [showUpgradeModal, setShowUpgradeModal] = useState(false);
+  const [sessionId, setSessionId] = useState(null);
+  const [code, setCode] = useState("");
+  const [params, setParams] = useState({});
+  const [telemetry, setTelemetry] = useState(null);
+  const [stlUrl, setStlUrl] = useState(null);
+  const [timings, setTimings] = useState(null);
 
-  // Prompt Auditor
-  const [auditing, setAuditing] = useState(false);
-  const [auditResult, setAuditResult] = useState(null);
+  const debounceTimer = useRef(null);
+  const resetViewRef = useRef(null);
 
-  useEffect(() => {
-    const today = new Date().toISOString().slice(0, 10);
-    const savedDate = localStorage.getItem("nutbolt_credit_date");
-    const savedCredits = localStorage.getItem("nutbolt_credits");
-
-    if (savedDate !== today) {
-      localStorage.setItem("nutbolt_credit_date", today);
-      localStorage.setItem("nutbolt_credits", "5");
-      setCredits(5);
-    } else if (savedCredits !== null) {
-      setCredits(parseInt(savedCredits, 10));
-    }
-  }, []);
-
-  const updateCredits = (newCount) => {
-    setCredits(newCount);
-    localStorage.setItem("nutbolt_credits", newCount.toString());
-  };
-
-  const abs = (u) => (u.startsWith("http") ? u : API + u) + "?t=" + Date.now();
-
-  const auditPrompt = async () => {
-    if (!prompt.trim()) return;
-    setAuditing(true);
-    setErr("");
+  const handleGenerate = async () => {
+    if (!prompt.trim() || loading) return;
+    setLoading(true);
     try {
-      const res = await fetch(`${API}/api/analyze-prompt`, {
+      const res = await fetch(`${API_BASE}/api/generate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt })
+        body: JSON.stringify({ prompt }),
       });
-      if (!res.ok) throw new Error("Audit service unavailable.");
       const data = await res.json();
-      setAuditResult(data);
-    } catch (e) {
-      setErr(` ${e.message}`);
+      if (!res.ok) throw new Error(data.detail || "Generation failed");
+
+      setSessionId(data.session_id);
+      setCode(data.code);
+      setParams(data.params || {});
+      setTelemetry(data.telemetry);
+      setTimings(data.timings);
+      setStlUrl(`${API_BASE}${data.stl_url}`);
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      setLoading(false);
     }
-    setAuditing(false);
   };
 
-  const generate = async (text = prompt) => {
-    if (!text.trim()) return;
-    if (credits <= 0) {
-      setShowUpgradeModal(true);
-      return;
-    }
+  const handleParamChange = (k, v) => {
+    const updated = { ...params, [k]: parseFloat(v) || v };
+    setParams(updated);
 
-    setBusy(true); setErr("");
-    try {
-      const r = await fetch(`${API}/api/generate`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt: text })
-      });
-      if (!r.ok) {
-        const ed = await r.json().catch(() => ({}));
-        throw new Error(ed.detail || `Kernel returned ${r.status}`);
-      }
-      const d = await r.json();
-      setM({ ...d, stl: abs(d.stl_url), step: API + d.step_url });
-      setHistory((h) => [text, ...h.filter((x) => x !== text)].slice(0, 6));
-      updateCredits(credits - 1);
-      setAuditResult(null);
-    } catch (e) {
-      setErr(`${e.message}. Is the FastAPI kernel running at ${API}?`);
-    }
-    setBusy(false);
-  };
-
-  useEffect(() => {
-    if (qs.get("prompt") && !auto.current) {
-      auto.current = true;
-      generate(qs.get("prompt"));
-    }
-  }, []);
-
-  const handleParamChange = (k, newVal) => {
-    const val = Number(newVal);
-    if (isNaN(val)) return;
-    const params = { ...m.params, [k]: val };
-    setM((s) => ({ ...s, params }));
-    clearTimeout(timer.current);
-    timer.current = setTimeout(async () => {
+    if (debounceTimer.current) clearTimeout(debounceTimer.current);
+    debounceTimer.current = setTimeout(async () => {
       try {
-        const r = await fetch(`${API}/api/recompile`, {
+        const res = await fetch(`${API_BASE}/api/recompile`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ session_id: m.session_id, params })
+          body: JSON.stringify({ session_id: sessionId, code, params: updated }),
         });
-        const d = await r.json();
-        if (d.status === "success") {
-          setM((s) => ({ ...s, telemetry: d.telemetry, stl: abs(d.stl_url) }));
-        } else {
-          setErr("Recompile failed: " + (d.detail || d.status));
+        const data = await res.json();
+        if (res.ok) {
+          setCode(data.code);
+          setTelemetry(data.telemetry);
+          setStlUrl(`${API_BASE}${data.stl_url}`);
         }
-      } catch (e) {
-        setErr("Recompile error: " + e.message);
+      } catch (err) {
+        console.error("Recompile error:", err);
       }
-    }, 280);
+    }, 250);
   };
 
-  const copy = async () => {
-    await navigator.clipboard.writeText(m.code);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1400);
+  const handleDownloadStep = async () => {
+    if (!sessionId || !code) return;
+    setStepLoading(true);
+    try {
+      const res = await fetch(`${API_BASE}/api/export-step`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: sessionId, code }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "STEP export failed");
+
+      const link = document.createElement("a");
+      link.href = `${API_BASE}${data.step_url}`;
+      link.download = `part_${sessionId}.step`;
+      link.click();
+    } catch (err) {
+      alert(err.message);
+    } finally {
+      setStepLoading(false);
+    }
   };
 
-  const handleSimulatePayment = (addedCredits) => {
-    updateCredits(credits + addedCredits);
-    setShowUpgradeModal(false);
-  };
-
-  const vol = m?.telemetry?.volume_cm3;
+  const cm3 = telemetry?.volume_cm3 || 0;
+  const currentDensity = DENSITIES[material] || DENSITIES.steel;
+  const massGrams = cm3 * currentDensity.g_cm3;
+  const estCost = (massGrams / 1000) * currentDensity.cost_kg;
 
   return (
-    <div className="studio">
-      <aside className="console">
-        <header>
-          <Link to="/" className="logo">nut<b>bolt</b>.ai</Link>
-          <div style={{ display: "flex", gap: "8px", alignItems: "center" }}>
-            <button 
-              onClick={() => setShowUpgradeModal(true)}
-              style={{
-                background: credits > 0 ? "rgba(0, 240, 255, 0.1)" : "rgba(255, 75, 75, 0.2)",
-                border: credits > 0 ? "1px solid rgba(0, 240, 255, 0.3)" : "1px solid rgba(255, 75, 75, 0.4)",
-                color: credits > 0 ? "var(--cyan, #00f0ff)" : "#ff6b6b",
-                padding: "3px 8px",
-                borderRadius: "12px",
-                fontSize: "11px",
-                fontWeight: 600,
-                cursor: "pointer",
-                display: "flex",
-                alignItems: "center",
-                gap: "4px"
-              }}
-            >
-              <Zap size={12} />
-              {credits > 0 ? `${credits} Credits Left` : "0 Credits (Refill)"}
-            </button>
-            <span className={"status" + (busy ? " busy" : "")}>
-              <i />{busy ? "COMPILING" : "KERNEL READY"}
-            </span>
+    <div className="flex h-screen bg-[#030712] text-slate-100 font-sans overflow-hidden">
+      {/* Sidebar Controls */}
+      <div className="w-[420px] flex flex-col border-r border-slate-800 bg-slate-950/70 backdrop-blur-md z-10">
+        <div className="p-4 border-b border-slate-800 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <span className="w-2.5 h-2.5 rounded-full bg-cyan-400 animate-pulse" />
+            <h1 className="font-mono font-bold text-base tracking-wider text-slate-200">nutbolt.ai</h1>
           </div>
-        </header>
+          <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-slate-800 text-slate-400">
+            OpenCASCADE 7.7
+          </span>
+        </div>
 
-        <div style={{ padding: "16px 18px", borderBottom: "1px solid var(--line)" }}>
+        {/* Prompt Input */}
+        <div className="p-4 border-b border-slate-800 flex flex-col gap-3">
           <textarea
-            rows={4}
             value={prompt}
             onChange={(e) => setPrompt(e.target.value)}
-            placeholder="Describe the mechanical part: dimensions, holes, fillets, bolt circles, wall thickness..."
-            onKeyDown={(e) => { if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) generate(); }}
+            placeholder="Describe mechanical part (e.g. GT2 timing pulley with 20 teeth, 5mm shaft bore, and 7mm belt width)..."
+            className="w-full h-24 p-3 rounded-lg bg-slate-900 border border-slate-800 focus:border-cyan-500 focus:outline-none text-xs font-mono resize-none leading-relaxed text-slate-200"
           />
+          <button
+            onClick={handleGenerate}
+            disabled={loading}
+            className="w-full py-2.5 rounded-lg bg-cyan-500 hover:bg-cyan-400 disabled:opacity-50 text-slate-950 font-semibold font-mono text-xs flex items-center justify-center gap-2 transition-all shadow-md shadow-cyan-500/20"
+          >
+            {loading ? <RefreshCw className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+            {loading ? "SYNTHESIZING SOLID..." : "SYNTHESIZE SOLID"}
+          </button>
+          {timings && (
+            <div className="text-[10px] font-mono text-slate-500 text-right">
+              Generated in {timings.total_ms}ms
+            </div>
+          )}
+        </div>
 
-          <div style={{ display: "flex", gap: "6px", margin: "6px 0 10px 0" }}>
-            <button
-              type="button"
-              onClick={auditPrompt} style={{display: "none"}}
-              disabled={auditing || busy || !prompt.trim()}
-              style={{
-                flex: 1,
-                background: "rgba(255, 255, 255, 0.05)",
-                border: "1px solid rgba(255, 255, 255, 0.12)",
-                color: "#94a3b8",
-                padding: "7px 10px",
-                borderRadius: "6px",
-                fontSize: "11px",
-                cursor: "pointer",
-                display: "flex",
-                alignItems: "center",
-                justifyContent: "center",
-                gap: "5px"
-              }}
-            >
-              <SearchCheck size={13} color="#00f0ff" />
-              {auditing ? "Analyzing Specs..." : ""}
-            </button>
-          </div>
+        {/* Tab Selection */}
+        <div className="flex border-b border-slate-800 text-xs font-mono">
+          <button
+            onClick={() => setActiveTab("params")}
+            className={`flex-1 py-2.5 flex items-center justify-center gap-1.5 border-b-2 transition-colors ${
+              activeTab === "params" ? "border-cyan-400 text-cyan-400 bg-slate-900/50" : "border-transparent text-slate-400 hover:text-slate-200"
+            }`}
+          >
+            <Sliders className="w-3.5 h-3.5" /> PARAMETERS
+          </button>
+          <button
+            onClick={() => setActiveTab("code")}
+            className={`flex-1 py-2.5 flex items-center justify-center gap-1.5 border-b-2 transition-colors ${
+              activeTab === "code" ? "border-cyan-400 text-cyan-400 bg-slate-900/50" : "border-transparent text-slate-400 hover:text-slate-200"
+            }`}
+          >
+            <Code className="w-3.5 h-3.5" /> SCRIPT
+          </button>
+          <button
+            onClick={() => setActiveTab("mass")}
+            className={`flex-1 py-2.5 flex items-center justify-center gap-1.5 border-b-2 transition-colors ${
+              activeTab === "mass" ? "border-cyan-400 text-cyan-400 bg-slate-900/50" : "border-transparent text-slate-400 hover:text-slate-200"
+            }`}
+          >
+            <Weight className="w-3.5 h-3.5" /> MASS
+          </button>
+        </div>
 
-          {auditResult && (
-            <div style={{
-              background: "rgba(10, 15, 28, 0.85)",
-              border: "1px solid rgba(0, 240, 255, 0.25)",
-              borderRadius: "8px",
-              padding: "10px 12px",
-              marginBottom: "12px",
-              fontSize: "12px"
-            }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "6px" }}>
-                <span style={{ fontWeight: 600, color: "#00f0ff", fontSize: "11px" }}>CAD SPEC FEASIBILITY</span>
-                <span style={{
-                  fontWeight: 700,
-                  fontSize: "12px",
-                  color: auditResult.score >= 8 ? "#22c55e" : auditResult.score >= 5 ? "#f59e0b" : "#ef4444"
-                }}>
-                  {auditResult.score}/10
-                </span>
-              </div>
-
-              <ul style={{ margin: "0 0 8px 0", paddingLeft: "14px", color: "#94a3b8", fontSize: "11px", lineHeight: "1.4" }}>
-                {auditResult.critique?.map((item, idx) => (
-                  <li key={idx}>{item}</li>
-                ))}
-              </ul>
-
-              {auditResult.improved_prompt && (
-                <div>
-                  <div style={{ fontSize: "10px", color: "#64748b", fontWeight: 700, marginBottom: "3px" }}>OPTIMIZED SPEC:</div>
-                  <div style={{
-                    background: "rgba(0, 0, 0, 0.4)",
-                    padding: "6px 8px",
-                    borderRadius: "4px",
-                    fontFamily: "monospace",
-                    fontSize: "11px",
-                    color: "#cbd5e1",
-                    marginBottom: "8px",
-                    maxHeight: "70px",
-                    overflowY: "auto"
-                  }}>
-                    {auditResult.improved_prompt}
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setPrompt(auditResult.improved_prompt);
-                      setAuditResult(null);
-                    }}
-                    style={{
-                      width: "100%",
-                      padding: "6px",
-                      borderRadius: "5px",
-                      border: "none",
-                      background: "rgba(0, 240, 255, 0.2)",
-                      color: "#00f0ff",
-                      fontWeight: 600,
-                      fontSize: "11px",
-                      cursor: "pointer",
-                      display: "flex",
-                      alignItems: "center",
-                      justifyContent: "center",
-                      gap: "5px"
-                    }}
-                  >
-                    <CheckCircle size={12} /> Apply Suggested Spec
-                  </button>
+        {/* Tab Body */}
+        <div className="flex-1 overflow-y-auto p-4">
+          {activeTab === "params" && (
+            <div className="flex flex-col gap-4">
+              {Object.keys(params).length === 0 ? (
+                <div className="text-slate-500 text-xs font-mono text-center py-12">
+                  No parameters generated yet.
                 </div>
+              ) : (
+                Object.entries(params).map(([k, v]) => (
+                  <div key={k} className="flex flex-col gap-1.5">
+                    <div className="flex justify-between text-xs font-mono text-slate-400">
+                      <span>{k}</span>
+                      <span className="text-cyan-400">{v} mm</span>
+                    </div>
+                    {typeof v === "number" && (
+                      <input
+                        type="range"
+                        min={Math.max(1, Math.round(v * 0.2))}
+                        max={Math.round(v * 2.5)}
+                        step="0.5"
+                        value={v}
+                        onChange={(e) => handleParamChange(k, e.target.value)}
+                        className="w-full accent-cyan-400 h-1 bg-slate-800 rounded-lg cursor-pointer"
+                      />
+                    )}
+                  </div>
+                ))
               )}
             </div>
           )}
 
-          <div className="row">
-            <span className="core-chip">OpenCASCADE Core</span>
-            <span>Ctrl+Enter to compile</span>
-          </div>
-
-          <button 
-            className="btn gold" 
-            style={{ width: "100%" }} 
-            disabled={busy} 
-            onClick={() => generate()}
-          >
-            <Sparkles size={15} />{busy ? "SYNTHESIZING SOLID..." : "SYNTHESIZE SOLID"}
-          </button>
-
-          <div className="chips">
-            {history.map((h) => (
-              <span key={h} className="chip" style={{ cursor: "pointer" }} onClick={() => { setPrompt(h); generate(h); }}>
-                {h.slice(0, 28)}{h.length > 28 ? "..." : ""}
-              </span>
-            ))}
-          </div>
-          {err && <div className="err">{err}</div>}
-        </div>
-
-        <div className="tabs">
-          {[["params", "PARAMETERS"], ["code", "CADQUERY"], ["mass", "MASS"]].map(([k, l]) => {
-            const I = ICON[k];
-            return (
-              <button key={k} className={tab === k ? "on" : ""} onClick={() => setTab(k)}>
-                <I size={14} />{l}
-              </button>
-            );
-          })}
-        </div>
-
-        <div className="pane">
-          {!m && <div className="row">Compile a part to unlock live parametric controls.</div>}
-
-          {m && tab === "params" && Object.entries(m.params || {}).map(([k, v]) => {
-            if (typeof v !== "number") return null;
-            const int = Number.isInteger(v);
-            const min = int ? Math.max(1, Math.floor(v * 0.25)) : +(v * 0.25).toFixed(2);
-            const max = int ? Math.max(10, Math.ceil(v * 2.5)) : +(v * 2.5).toFixed(2);
-
-            return (
-              <div className="param-card" key={k}>
-                <div className="param-header">
-                  <span className="param-title">{k.replace(/_/g, " ")}</span>
-                  <div className="param-input-wrap">
-                    <input
-                      type="number"
-                      className="param-num-input"
-                      value={v}
-                      step={int ? 1 : 0.1}
-                      onChange={(e) => handleParamChange(k, e.target.value)}
-                    />
-                    <span className="param-unit">mm</span>
-                  </div>
-                </div>
-                <input
-                  type="range"
-                  min={min}
-                  max={max}
-                  step={int ? 1 : 0.1}
-                  value={v}
-                  onChange={(e) => handleParamChange(k, e.target.value)}
-                />
-              </div>
-            );
-          })}
-
-          {m && tab === "code" && (
-            <>
-              <button className="btn" style={{ marginBottom: 10 }} onClick={copy}>
-                {copied ? <Check size={14} /> : <Copy size={14} />}{copied ? "COPIED" : "COPY SCRIPT"}
-              </button>
-              <pre dangerouslySetInnerHTML={{ __html: highlight(m.code) }} />
-            </>
+          {activeTab === "code" && (
+            <pre className="text-[11px] font-mono text-slate-300 bg-slate-900 p-3 rounded-lg overflow-x-auto leading-relaxed border border-slate-800">
+              {code || "# Synthesize a solid to inspect CadQuery code"}
+            </pre>
           )}
 
-          {m && tab === "mass" && (
-            <>
-              <table>
-                <thead>
-                  <tr><th>Material</th><th>g/cm³</th><th>Mass</th></tr>
-                </thead>
-                <tbody>
-                  {DENSITY.map(([n, d]) => (
-                    <tr key={n}>
-                      <td style={{ width: "auto" }}>{n}</td>
-                      <td className="mono">{d}</td>
-                      <td className="mono" style={{ color: "var(--cyan)" }}>
-                        {vol != null ? (vol * d).toFixed(1) + " g" : "-"}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-              <div className="row" style={{ marginTop: 14 }}>
-                <span>Volume: {vol != null ? vol.toFixed(2) : "-"} cm³</span>
-                <span>BBox: {m.telemetry?.bbox_mm?.map((x) => x.toFixed(1)).join(" × ") || "-"} mm</span>
+          {activeTab === "mass" && (
+            <div className="flex flex-col gap-4 text-xs font-mono">
+              <div className="p-3 rounded-lg bg-slate-900 border border-slate-800 flex justify-between">
+                <span className="text-slate-400">Displacement Volume:</span>
+                <span className="text-cyan-400 font-bold">{cm3} cm?</span>
               </div>
-            </>
+              <div className="p-3 rounded-lg bg-slate-900 border border-slate-800 flex justify-between">
+                <span className="text-slate-400">Computed Part Mass:</span>
+                <span className="text-slate-200 font-bold">{massGrams.toFixed(1)} grams</span>
+              </div>
+              <div className="p-3 rounded-lg bg-slate-900 border border-slate-800 flex justify-between">
+                <span className="text-slate-400">Raw Material Cost:</span>
+                <span className="text-emerald-400 font-bold">${estCost.toFixed(2)}</span>
+              </div>
+            </div>
           )}
         </div>
-      </aside>
+      </div>
 
-      <CadViewport stlUrl={m?.stl} stepUrl={m?.step} busy={busy} />
-
-      {/* Pricing & Upgrade Modal */}
-      {showUpgradeModal && (
-        <div style={{
-          position: "fixed",
-          inset: 0,
-          backgroundColor: "rgba(5, 7, 15, 0.82)",
-          backdropFilter: "blur(8px)",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center",
-          zIndex: 9999,
-          padding: "20px"
-        }}>
-          <div style={{
-            background: "#0d111c",
-            border: "1px solid rgba(255, 255, 255, 0.12)",
-            borderRadius: "16px",
-            width: "100%",
-            maxWidth: "520px",
-            padding: "28px",
-            boxShadow: "0 25px 60px rgba(0, 0, 0, 0.6)",
-            position: "relative",
-            color: "#fff"
-          }}>
-            <button 
-              onClick={() => setShowUpgradeModal(false)}
-              style={{
-                position: "absolute",
-                top: "16px",
-                right: "16px",
-                background: "transparent",
-                border: "none",
-                color: "#7e8b9b",
-                cursor: "pointer"
-              }}
+      {/* 3D Viewport Stage */}
+      <div className="flex-1 relative flex flex-col">
+        {/* Viewport Top Bar */}
+        <div className="absolute top-4 left-4 z-10 flex gap-2">
+          {["steel", "aluminum", "brass", "copper"].map((m) => (
+            <button
+              key={m}
+              onClick={() => setMaterial(m)}
+              className={`px-3 py-1 rounded text-xs font-mono uppercase tracking-wider transition-all border ${
+                material === m ? "border-cyan-400 bg-cyan-950/70 text-cyan-300" : "border-slate-800 bg-slate-900/60 text-slate-400 hover:text-slate-200"
+              }`}
             >
-              <X size={20} />
+              {m}
             </button>
-
-            <div style={{ textAlign: "center", marginBottom: "24px" }}>
-              <div style={{
-                display: "inline-flex",
-                alignItems: "center",
-                justifyContent: "center",
-                width: "48px",
-                height: "48px",
-                borderRadius: "50%",
-                background: "rgba(0, 240, 255, 0.1)",
-                color: "#00f0ff",
-                marginBottom: "12px"
-              }}>
-                <Zap size={24} />
-              </div>
-              <h3 style={{ margin: "0 0 6px 0", fontSize: "20px", fontWeight: 700 }}>
-                {credits <= 0 ? "Daily Free Quota Reached" : "Upgrade Your Engine"}
-              </h3>
-              <p style={{ margin: 0, fontSize: "13px", color: "#8a99ad" }}>
-                Keep synthesizing complex parts without interruption.
-              </p>
-            </div>
-
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "14px", marginBottom: "20px" }}>
-              {/* Pocket Refill */}
-              <div style={{
-                background: "rgba(255, 255, 255, 0.03)",
-                border: "1px solid rgba(255, 255, 255, 0.08)",
-                borderRadius: "12px",
-                padding: "16px",
-                display: "flex",
-                flexDirection: "column",
-                justifyContent: "space-between"
-              }}>
-                <div>
-                  <span style={{ fontSize: "11px", color: "#8a99ad", fontWeight: 600, letterSpacing: "0.5px" }}>ONE-TIME</span>
-                  <h4 style={{ margin: "4px 0 8px 0", fontSize: "16px" }}>Pocket Refill</h4>
-                  <div style={{ fontSize: "24px", fontWeight: 800, marginBottom: "8px" }}>
-                    ₹99 <span style={{ fontSize: "12px", color: "#8a99ad", fontWeight: 400 }}>($1.29)</span>
-                  </div>
-                  <ul style={{ margin: 0, paddingLeft: "16px", fontSize: "12px", color: "#cbd5e1", lineHeight: "1.6" }}>
-                    <li><b>25 Credits</b></li>
-                    <li>Never expires</li>
-                    <li>Standard STL Export</li>
-                  </ul>
-                </div>
-                <button 
-                  onClick={() => handleSimulatePayment(25)}
-                  style={{
-                    marginTop: "16px",
-                    width: "100%",
-                    padding: "10px",
-                    borderRadius: "8px",
-                    border: "1px solid rgba(255, 255, 255, 0.15)",
-                    background: "#182032",
-                    color: "#fff",
-                    fontWeight: 600,
-                    fontSize: "13px",
-                    cursor: "pointer"
-                  }}
-                >
-                  Get 25 Credits
-                </button>
-              </div>
-
-              {/* Maker Monthly */}
-              <div style={{
-                background: "linear-gradient(180deg, rgba(0, 240, 255, 0.08) 0%, rgba(0, 0, 0, 0.1) 100%)",
-                border: "1px solid rgba(0, 240, 255, 0.35)",
-                borderRadius: "12px",
-                padding: "16px",
-                display: "flex",
-                flexDirection: "column",
-                justifyContent: "space-between"
-              }}>
-                <div>
-                  <span style={{ fontSize: "11px", color: "#00f0ff", fontWeight: 700, letterSpacing: "0.5px" }}>BEST VALUE</span>
-                  <h4 style={{ margin: "4px 0 8px 0", fontSize: "16px" }}>Maker Pass</h4>
-                  <div style={{ fontSize: "24px", fontWeight: 800, marginBottom: "8px" }}>
-                    ₹199 <span style={{ fontSize: "12px", color: "#8a99ad", fontWeight: 400 }}>/ month</span>
-                  </div>
-                  <ul style={{ margin: 0, paddingLeft: "16px", fontSize: "12px", color: "#cbd5e1", lineHeight: "1.6" }}>
-                    <li><b>100 Generations</b> / mo</li>
-                    <li>STEP & STL Export</li>
-                    <li>Priority Queue</li>
-                  </ul>
-                </div>
-                <button 
-                  onClick={() => handleSimulatePayment(100)}
-                  style={{
-                    marginTop: "16px",
-                    width: "100%",
-                    padding: "10px",
-                    borderRadius: "8px",
-                    border: "none",
-                    background: "linear-gradient(90deg, #00f0ff 0%, #00a8ff 100%)",
-                    color: "#05070f",
-                    fontWeight: 700,
-                    fontSize: "13px",
-                    cursor: "pointer"
-                  }}
-                >
-                  Upgrade to Pass
-                </button>
-              </div>
-            </div>
-
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: "6px", fontSize: "11px", color: "#7e8b9b" }}>
-              <ShieldCheck size={14} color="#00f0ff" />
-              <span>Instant activation via UPI, Cards, or Netbanking</span>
-            </div>
-          </div>
+          ))}
+          <button
+            onClick={() => setWireframe(!wireframe)}
+            className={`px-3 py-1 rounded text-xs font-mono transition-all border ${
+              wireframe ? "border-cyan-400 bg-cyan-950/70 text-cyan-300" : "border-slate-800 bg-slate-900/60 text-slate-400 hover:text-slate-200"
+            }`}
+          >
+            WIREFRAME
+          </button>
         </div>
-      )}
+
+        {/* Viewport Action Exports */}
+        <div className="absolute top-4 right-4 z-10 flex gap-2">
+          {stlUrl && (
+            <a
+              href={stlUrl}
+              download="part.stl"
+              className="px-4 py-1.5 rounded-lg border border-slate-700 bg-slate-900/80 hover:bg-slate-800 text-slate-200 text-xs font-mono flex items-center gap-1.5 backdrop-blur-md"
+            >
+              <Download className="w-3.5 h-3.5" /> STL
+            </a>
+          )}
+          {stlUrl && (
+            <button
+              onClick={handleDownloadStep}
+              disabled={stepLoading}
+              className="px-4 py-1.5 rounded-lg border border-cyan-500/50 bg-cyan-950/60 hover:bg-cyan-900/70 text-cyan-300 text-xs font-mono flex items-center gap-1.5 backdrop-blur-md"
+            >
+              {stepLoading ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Download className="w-3.5 h-3.5" />}
+              {stepLoading ? "COMPILING STEP..." : "STEP (AP214)"}
+            </button>
+          )}
+        </div>
+
+        <CadViewport
+          stlUrl={stlUrl}
+          materialType={material}
+          wireframe={wireframe}
+          onResetViewRef={resetViewRef}
+        />
+      </div>
     </div>
   );
 }
-
