@@ -7,6 +7,21 @@ import re
 def match_catalog_template(prompt: str) -> str:
     p = prompt.lower()
 
+    # Permanent routing rule: compound mechanical intents (e.g. "flanged pulley with
+    # keyway and bolt circle") are custom synthesis requests -> let the LLM handle them
+    # instead of the deterministic catalog guessing.
+    combined = [
+        bool(re.search(r"t-slot|v-slot|extrusion|rail|profile|beam|structural|bar", p)),
+        bool(re.search(r"gt2|timing|belt|pulley|clutch|coupler|gear|pinion", p)),
+        bool(re.search(r"nema|stepper|motor|mount", p)),
+        bool(re.search(r"thumbwheel|knurled|knob|handwheel", p)),
+        bool(re.search(r"flange|pipe|tube|hydraulic|fluid", p)),
+        bool(re.search(r"heatsink|heat\s+sink|heat-sink", p)),
+        bool(re.search(r"bracket|gusset|angle|corner", p)),
+    ]
+    if sum(1 for hit in combined if hit) > 1:
+        return None
+
     # 1. T-Slot / V-Slot Structural Rail (2020, 2040, 4040)
     if ("2040" in p or "2020" in p or "4040" in p or "t-slot" in p or "v-slot" in p or "extrusion" in p) and ("rail" in p or "profile" in p or "beam" in p or "structural" in p):
         w = 40.0 if "2040" in p else (40.0 if "4040" in p else 20.0)
@@ -156,8 +171,8 @@ result = MechanicalBuilder.turned_concentric(
 )
 """
 
-    # 5. Pipe / Tube Flange
-    if "flange" in p:
+    # 5. Pipe / Tube Flange (skip flanged pulleys / couplers / clutches — let LLM handle those)
+    if "flange" in p and not any(w in p for w in ("pulley", "clutch", "coupler", "gear", "transmission", "motor")):
         od, bore = 90.0, 30.0
         m_od = re.search(r"(\d+(?:\.\d+)?)\s*(?:mm)?\s*(?:outer|dia)", p)
         if m_od: od = float(m_od.group(1))
