@@ -1,4 +1,4 @@
-"""
+﻿"""
 nutbolt.ai - Unified CAD Kernel
 """
 import os
@@ -19,7 +19,7 @@ from catalog_templates import match_catalog_template
 
 MODELS = [
     m.strip()
-    for m in os.getenv("GEMINI_MODELS", "gemini-2.5-flash,gemini-2.5-flash-lite,gemini-1.5-flash").split(",")
+    for m in os.getenv("GEMINI_MODELS", "gemini-2.0-flash,gemini-1.5-flash,gemini-1.5-flash").split(",")
     if m.strip()
 ]
 PER_MODEL_TIMEOUT = 4.0

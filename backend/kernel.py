@@ -85,7 +85,7 @@ def call_gemini(prompt: str) -> str:
         print("[Gemini] GEMINI_API_KEY missing/empty — triggering fallback.")
         return fallback_generator(prompt)
 
-    models = ["gemini-2.5-flash", "gemini-2.5-flash-lite"]
+    models = ["gemini-2.0-flash", "gemini-1.5-flash"]
     last_error = None
 
     for model in models:
