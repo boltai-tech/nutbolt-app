@@ -1,101 +1,96 @@
-﻿import os
+"""
+nutbolt.ai - FastAPI Production Backend
+"""
+import os
 import uuid
-
-from fastapi import FastAPI
+from typing import Optional, Dict, Any
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from kernel import (
-    call_gemini,
-    compile_to_files,
-    extract_params_from_code,
-    fallback_generator,
-    inject_params
-)
+import kernel
 
-app = FastAPI(title="Nutbolt Fast CAD Kernel")
+app = FastAPI(title="nutbolt.ai CAD Kernel", version="2.4.0")
 
-origins = [o.strip() for o in os.getenv("ALLOWED_ORIGINS", "*").split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins if origins != ["*"] else ["*"],
+    allow_origins=["*"],
     allow_credentials=False,
     allow_methods=["*"],
-    allow_headers=["*"]
+    allow_headers=["*"],
 )
 
 os.makedirs("assets", exist_ok=True)
 app.mount("/assets", StaticFiles(directory="assets"), name="assets")
 
-class GenReq(BaseModel):
+class GenerateRequest(BaseModel):
     prompt: str
+    session_id: Optional[str] = None
 
-class UpdateReq(BaseModel):
+class RecompileRequest(BaseModel):
     session_id: str
     code: str
-    params: dict
+    params: Dict[str, Any]
 
-@app.get("/")
-def health():
-    return {"status": "online"}
-
-@app.get("/api/health")
-def health_check():
-    return {"status": "online"}
-
-@app.options("/{full_path:path}")
-async def preflight_handler(full_path: str):
-    return JSONResponse(status_code=200, content={"status": "ok"})
+class ExportStepRequest(BaseModel):
+    session_id: str
+    code: str
 
 @app.post("/api/analyze-prompt")
-@app.post("/api/audit-prompt")
-async def analyze_prompt(req: GenReq):
+async def analyze_prompt(req: GenerateRequest):
     return {"status": "success", "score": 10, "critique": [], "improved_prompt": req.prompt}
 
+@app.get("/health")
+def health():
+    return {"status": "ready", "kernel": "OpenCASCADE 7.7 via CadQuery 2.4.0"}
+
+@app.get("/api/health")
+def api_health():
+    return {"status": "online"}
+
 @app.post("/api/generate")
-async def generate(req: GenReq):
+def generate(req: GenerateRequest):
+    if not req.prompt.strip():
+        raise HTTPException(status_code=400, detail="Empty prompt provided.")
+
+    session_id = req.session_id or str(uuid.uuid4())[:8]
     try:
-        code = call_gemini(req.prompt)
-        sid = str(uuid.uuid4())[:8]
-        stl_p, step_p, telemetry = compile_to_files(code, sid)
-
-        if stl_p is None:
-            code = fallback_generator(req.prompt)
-            stl_p, step_p, telemetry = compile_to_files(code, sid)
-
-        params = extract_params_from_code(code)
+        output = kernel.generate_model(req.prompt, session_id)
+        params = kernel.extract_params_from_code(output["code"])
         return {
-            "status": "success",
-            "session_id": sid,
-            "cadquery_code": code,
-            "code": code,
-            "parameters": params,
-            "stl_url": f"/assets/{sid}/part.stl",
-            "step_url": f"/assets/{sid}/part.step",
-            "telemetry": telemetry
+            "session_id": session_id,
+            "code": output["code"],
+            "params": params,
+            "telemetry": output["telemetry"],
+            "source": output["source"],
+            "timings": output["timings"],
+            "stl_url": f"/assets/{session_id}/part.stl",
+            "step_url": None,
         }
     except Exception as e:
-        return JSONResponse(status_code=500, content={"status": "error", "detail": str(e)})
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/update-params")
 @app.post("/api/recompile")
-async def update_params(req: UpdateReq):
+def recompile(req: RecompileRequest):
     try:
-        new_code = inject_params(req.code, req.params)
-        stl_p, step_p, telemetry = compile_to_files(new_code, req.session_id)
-        if stl_p is None:
-            return JSONResponse(status_code=400, content={"status": "error", "detail": "Recompile failed"})
+        updated_code = kernel.inject_params(req.code, req.params)
+        _, telemetry = kernel.compile_stl(updated_code, req.session_id)
+        timestamp = int(os.path.getmtime(os.path.join("assets", req.session_id, "part.stl")))
         return {
-            "status": "success",
             "session_id": req.session_id,
-            "cadquery_code": new_code,
-            "code": new_code,
-            "parameters": extract_params_from_code(new_code),
-            "stl_url": f"/assets/{req.session_id}/part.stl",
-            "step_url": f"/assets/{req.session_id}/part.step",
-            "telemetry": telemetry
+            "code": updated_code,
+            "params": req.params,
+            "telemetry": telemetry,
+            "stl_url": f"/assets/{req.session_id}/part.stl?t={timestamp}",
         }
     except Exception as e:
-        return JSONResponse(status_code=500, content={"status": "error", "detail": str(e)})
+        raise HTTPException(status_code=400, detail=f"Recompile failed: {e}")
+
+@app.post("/api/export-step")
+def export_step(req: ExportStepRequest):
+    try:
+        kernel.compile_step(req.code, req.session_id)
+        return {"status": "success", "step_url": f"/assets/{req.session_id}/part.step"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"STEP export failed: {e}")

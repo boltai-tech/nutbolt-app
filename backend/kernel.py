@@ -1,229 +1,239 @@
-﻿import ast
-import math
+﻿"""
+nutbolt.ai - Unified CAD Kernel
+"""
 import os
 import re
+import ast
+import math
+import time
+import threading
+import traceback
+from typing import Optional, Tuple, Dict, Any
 
+import requests
 import cadquery as cq
 from cadquery import exporters
-import requests
 
-SYSTEM_PROMPT = """You are a Principal CAD Engineer writing CadQuery Python scripts.
-Output ONLY executable Python code. No markdown fences, no comments.
+from cad_builder import MechanicalBuilder
+from catalog_templates import match_catalog_template
+
+MODELS = [
+    m.strip()
+    for m in os.getenv("GEMINI_MODELS", "gemini-2.0-flash,gemini-1.5-flash,gemini-1.5-flash").split(",")
+    if m.strip()
+]
+PER_MODEL_TIMEOUT = 4.0
+MAX_PROMPT_CHARS = 1500
+
+_COMPILE_LOCK = threading.Lock()
+_SESSION = requests.Session()
+
+class CadError(Exception):
+    pass
+
+SYSTEM_PROMPT = """You are a Principal CAD Systems Engineer writing Python scripts using the `MechanicalBuilder` API.
+Output ONLY raw, executable Python code. Never use markdown fences (no ```python), no commentary, no imports.
+`cq`, `math`, and `MechanicalBuilder` are pre-imported in your execution scope.
 
 RULES:
-1. First statement must be params = {...}
-2. Final object must be assigned to result.
-3. Use only valid CadQuery Python.
-4. For L-brackets, U-channels, angles, and bent profiles:
-   - draw one closed 2D polygon on Workplane("XZ") using .polyline([...]).close().extrude()
-   - never emit disconnected floating slabs or multiple independent .box() pieces with .translate()
-5. For plates, flanges, spacers, sleeves, washers:
-   - use one closed profile or one .box() or one .circle().extrude()
-6. Holes must be cut with .faces(">Z").workplane().pushPoints([...]).hole(d) or .faces("<Y").workplane().hole(d)
-7. Return only Python code, nothing else.
+1. First line MUST declare a flat dictionary: params = {...} with numerical float/int values in millimeters.
+2. Build ALL geometry via `MechanicalBuilder` methods:
+   - MechanicalBuilder.turned_concentric(...)
+   - MechanicalBuilder.profile_extruded(...)
+   - MechanicalBuilder.prismatic_plate(...)
+   - MechanicalBuilder.shell_enclosure(...)
+   - MechanicalBuilder.manifold_block(...)
+3. Final statement MUST assign: result = <cq.Workplane>.
+4. Keep radial pattern loops <= 12 to maintain sub-second compile speed.
 """
+
+def _find_params_node(tree: ast.Module):
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Name) and target.id == "params":
+                    return node
+    return None
 
 def extract_params_from_code(code_str: str) -> dict:
     try:
-        tree = ast.parse(code_str)
-        for node in tree.body:
-            if isinstance(node, ast.Assign):
-                for target in node.targets:
-                    if isinstance(target, ast.Name) and target.id == "params":
-                        return ast.literal_eval(node.value)
+        node = _find_params_node(ast.parse(code_str))
+        if node is not None:
+            val = ast.literal_eval(node.value)
+            if isinstance(val, dict):
+                return val
     except Exception:
         pass
     return {}
 
 def inject_params(code_str: str, new_params: dict) -> str:
-    lines = ["params = {"]
+    old = extract_params_from_code(code_str)
+    parts = []
     for k, v in new_params.items():
         try:
-            val = float(v)
-            if float(val).is_integer():
-                val = int(val)
+            f = float(v)
+            if isinstance(old.get(k), int) and not isinstance(old.get(k), bool) and f.is_integer():
+                val = repr(int(f))
+            else:
+                val = repr(f)
         except Exception:
-            val = v
-        lines.append(f'    "{k}": {val},')
-    lines.append("}")
-    new_block = "\n".join(lines)
-    return re.sub(r"params\s*=\s*\{[^}]*\}", new_block, code_str, count=1)
+            val = repr(v)
+        parts.append(f"    {k!r}: {val},")
+    block = "params = {\n" + "\n".join(parts) + "\n}"
 
-def compile_to_files(code_str: str, session_id: str):
     try:
-        scope = {"cq": cq, "math": math}
-        exec(code_str, scope)
-        res = scope.get("result")
-        if res is None:
-            return None, None, None
+        node = _find_params_node(ast.parse(code_str))
+        if node is not None:
+            lines = code_str.split("\n")
+            start, end = node.lineno - 1, node.end_lineno
+            return "\n".join(lines[:start] + block.split("\n") + lines[end:])
+    except Exception:
+        pass
+    return block + "\n" + code_str
 
-        val = res.val()
-        if val is None or val.Volume() <= 0.001:
-            return None, None, None
+def build_solid(code_str: str) -> cq.Workplane:
+    scope = {"cq": cq, "math": math, "MechanicalBuilder": MechanicalBuilder}
+    try:
+        exec(code_str, scope)
+    except Exception as e:
+        raise CadError(f"Runtime execution error: {type(e).__name__}: {e}")
+
+    res = scope.get("result")
+    if res is None or not isinstance(res, cq.Workplane):
+        raise CadError("Script did not assign a valid cq.Workplane to variable `result`.")
+
+    solids = res.solids().vals()
+    if not solids:
+        raise CadError("OpenCASCADE failed to construct any 3D solid geometry.")
+    if len(solids) > 1:
+        raise CadError(f"Script produced {len(solids)} disconnected solids. Geometry must be a single solid.")
+
+    val = solids[0]
+    if val.Volume() <= 0.001:
+        raise CadError("Constructed solid has degenerate non-positive volume.")
+
+    return res
+
+def compile_stl(code_str: str, session_id: str) -> Tuple[str, Dict[str, Any]]:
+    with _COMPILE_LOCK:
+        res = build_solid(code_str)
+        val = res.solids().vals()[0]
 
         out_dir = os.path.join("assets", session_id)
         os.makedirs(out_dir, exist_ok=True)
         stl_path = os.path.join(out_dir, "part.stl")
-        step_path = os.path.join(out_dir, "part.step")
 
-        exporters.export(res, stl_path, exporters.ExportTypes.STL, tolerance=0.3, angularTolerance=0.3)
-        exporters.export(res, step_path, exporters.ExportTypes.STEP)
+        exporters.export(res, stl_path, exporters.ExportTypes.STL, tolerance=0.35, angularTolerance=0.45)
 
         bbox = val.BoundingBox()
+        vol = val.Volume()
         telemetry = {
-            "volume_cm3": round(val.Volume() / 1000.0, 3),
-            "bbox_mm": [round(bbox.xlen, 2), round(bbox.ylen, 2), round(bbox.zlen, 2)]
+            "volume_mm3": round(vol, 2),
+            "volume_cm3": round(vol / 1000.0, 3),
+            "bbox_mm": [round(bbox.xlen, 2), round(bbox.ylen, 2), round(bbox.zlen, 2)],
+            "solids": 1,
         }
-        return stl_path, step_path, telemetry
-    except Exception as e:
-        print(f"[Compile Error]: {e}")
-        return None, None, None
+        return stl_path, telemetry
 
-def call_gemini(prompt: str) -> str:
+def compile_step(code_str: str, session_id: str) -> str:
+    with _COMPILE_LOCK:
+        res = build_solid(code_str)
+        out_dir = os.path.join("assets", session_id)
+        os.makedirs(out_dir, exist_ok=True)
+        step_path = os.path.join(out_dir, "part.step")
+        exporters.export(res, step_path, exporters.ExportTypes.STEP)
+        return step_path
+
+def _call_gemini_raw(prompt_text: str, diagnostic_context: Optional[str] = None) -> Optional[str]:
     key = os.getenv("GEMINI_API_KEY", "").strip()
     if not key:
-        print("[Gemini] GEMINI_API_KEY missing/empty — triggering fallback.")
-        return fallback_generator(prompt)
+        return None
 
-    models = ["gemini-2.0-flash", "gemini-1.5-flash"]
-    last_error = None
+    contents = [{"role": "user", "parts": [{"text": prompt_text}]}]
+    if diagnostic_context:
+        contents.append({"role": "model", "parts": [{"text": "Failed during kernel compilation."}]})
+        contents.append({"role": "user", "parts": [{"text": f"FIX KERNEL ERROR:\n{diagnostic_context}\nOutput ONLY valid python."}]})
 
-    for model in models:
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={key}"
+    for model in MODELS:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent"
         payload = {
-            "contents": [{"parts": [{"text": SYSTEM_PROMPT + "\nPrompt: " + prompt}]}],
-            "generationConfig": {
-                "temperature": 0.1,
-                "maxOutputTokens": 4000,
-                "responseMimeType": "text/plain"
-            }
+            "systemInstruction": {"parts": [{"text": SYSTEM_PROMPT}]},
+            "contents": contents,
+            "generationConfig": {"temperature": 0.1, "maxOutputTokens": 1000},
         }
-
         if "2.5" in model:
-            payload["thinkingConfig"] = {"thinkingBudget": 0}
+            payload["generationConfig"]["thinkingConfig"] = {"thinkingBudget": 0}
 
         try:
-            resp = requests.post(url, json=payload, timeout=5.5)
-            if resp.status_code != 200:
-                last_error = resp.text
-                print(f"[Gemini] status={resp.status_code} body={resp.text}")
-                continue
+            resp = _SESSION.post(
+                url,
+                headers={"Content-Type": "application/json", "x-goog-api-key": key},
+                json=payload,
+                timeout=(2.0, PER_MODEL_TIMEOUT),
+            )
+            if resp.status_code == 200:
+                parts = resp.json().get("candidates", [{}])[0].get("content", {}).get("parts", [])
+                text = "".join(p.get("text", "") for p in parts)
+                clean = re.sub(r"```(?:python)?\s*|```", "", text).strip()
+                if "params" in clean and "result" in clean:
+                    return clean
+        except Exception:
+            continue
 
-            data = resp.json()
-            candidates = data.get("candidates", [])
-            if not candidates:
-                continue
+    return None
 
-            raw = candidates[0].get("content", {}).get("parts", [{}])[0].get("text", "").strip()
-            clean = re.sub(r"^```python\s*|^```\s*|```$", "", raw, flags=re.MULTILINE).strip()
-            if "result" in clean and "params" in clean:
-                return clean
-        except Exception as exc:
-            last_error = str(exc)
-            print(f"[Gemini Error]: {exc}")
+def generate_model(prompt: str, session_id: str) -> dict:
+    t0 = time.monotonic()
+    timings = {}
 
-    print(f"[Gemini fallback]: {last_error or 'No valid model response'}")
-    return fallback_generator(prompt)
+    # Tier 1: Parametric Macro Catalog
+    template_code = match_catalog_template(prompt)
+    if template_code:
+        try:
+            _, telemetry = compile_stl(template_code, session_id)
+            timings["total_ms"] = int((time.monotonic() - t0) * 1000)
+            return {"code": template_code, "telemetry": telemetry, "source": "parametric_catalog", "timings": timings}
+        except Exception as e:
+            print(f"[Catalog error]: {e}")
 
-def fallback_generator(prompt: str) -> str:
-    p = prompt.lower()
+    # Tier 2: LLM Synthesis with MechanicalBuilder
+    llm_code = _call_gemini_raw(f"Part Request: {prompt[:MAX_PROMPT_CHARS]}")
+    if llm_code:
+        try:
+            _, telemetry = compile_stl(llm_code, session_id)
+            timings["total_ms"] = int((time.monotonic() - t0) * 1000)
+            return {"code": llm_code, "telemetry": telemetry, "source": "gemini_few_shot", "timings": timings}
+        except Exception as e:
+            # Tier 2b: Single-Pass Self-Healing
+            healed = _call_gemini_raw(
+                f"Part Request: {prompt[:MAX_PROMPT_CHARS]}",
+                diagnostic_context=f"Failed Code:\n{llm_code}\n\nError:\n{traceback.format_exc()}"
+            )
+            if healed:
+                try:
+                    _, telemetry = compile_stl(healed, session_id)
+                    timings["total_ms"] = int((time.monotonic() - t0) * 1000)
+                    return {"code": healed, "telemetry": telemetry, "source": "gemini_self_healed", "timings": timings}
+                except Exception:
+                    pass
 
-    if "u-channel" in p or "channel" in p:
-        return """params = {
-    "width": 80.0,
-    "flange_height": 40.0,
-    "thickness": 6.0,
-    "length": 100.0,
-    "hole_dia": 8.0
-}
-w, h, t = params["width"], params["flange_height"], params["thickness"]
-pts = [(0,0), (w,0), (w,h), (w-t,h), (w-t,t), (t,t), (t,h), (0,h)]
-result = (
-    cq.Workplane("XZ").polyline(pts).close().extrude(params["length"])
-    .faces("<Z").workplane()
-    .pushPoints([(0, -params["length"]*0.25), (0, params["length"]*0.25)])
-    .hole(params["hole_dia"])
-)
-"""
-
-    if "bushing" in p or "spacer" in p or "sleeve" in p:
-        return """params = {
-    "outer_dia": 40.0,
-    "inner_bore": 16.0,
-    "height": 35.0
-}
-result = (
-    cq.Workplane("XY")
-    .circle(params["outer_dia"] / 2.0)
-    .circle(params["inner_bore"] / 2.0)
-    .extrude(params["height"])
-)
-"""
-
-    if "bracket" in p or "l-shape" in p or "angle" in p:
-        return """params = {
-    "width": 50.0,
-    "base_length": 60.0,
-    "wall_height": 50.0,
-    "thickness": 5.0,
-    "base_hole": 6.0,
-    "wall_hole": 20.0
-}
-pts = [
-    (0.0, 0.0),
-    (params["base_length"], 0.0),
-    (params["base_length"], params["thickness"]),
-    (params["thickness"], params["thickness"]),
-    (params["thickness"], params["wall_height"]),
-    (0.0, params["wall_height"])
-]
-result = (
-    cq.Workplane("XZ")
-    .polyline(pts)
-    .close()
-    .extrude(params["width"])
-    .faces("<Y").workplane()
-    .pushPoints([(params["wall_height"] * 0.55, 0.0)])
-    .hole(params["wall_hole"])
-    .faces("<Z").workplane()
-    .pushPoints([
-        (params["base_length"] * 0.65, -params["width"] * 0.25),
-        (params["base_length"] * 0.65, params["width"] * 0.25)
-    ])
-    .hole(params["base_hole"])
-)
-"""
-
-    if "flange" in p or "pipe" in p or "cylinder" in p:
-        return """params = {
-    "outer_dia": 90.0,
-    "bore_dia": 30.0,
-    "pcd": 65.0,
-    "hole_dia": 8.0,
-    "thickness": 8.0
-}
-import math
-bolt_pts = [((params["pcd"]/2)*math.cos(i*math.pi/2), (params["pcd"]/2)*math.sin(i*math.pi/2)) for i in range(4)]
-result = (
-    cq.Workplane("XY").circle(params["outer_dia"]/2).extrude(params["thickness"])
-    .faces(">Z").workplane().hole(params["bore_dia"])
-    .faces(">Z").workplane().pushPoints(bolt_pts).hole(params["hole_dia"])
-)
-"""
-
-    return """params = {
-    "width": 60.0,
+    # Tier 3: Deterministic Safe Fallback
+    fallback = '''params = {
     "length": 60.0,
+    "width": 60.0,
     "thickness": 5.0,
-    "center_bore": 22.0,
-    "mount_hole": 3.5,
-    "hole_spacing": 31.0
+    "center_bore": 20.0,
+    "mount_hole": 4.5,
+    "hole_spacing": 36.0
 }
-s = params["hole_spacing"] / 2.0
-pts = [(-s, -s), (s, -s), (s, s), (-s, s)]
-result = (
-    cq.Workplane("XY").box(params["width"], params["length"], params["thickness"])
-    .faces(">Z").workplane().hole(params["center_bore"])
-    .faces(">Z").workplane().pushPoints(pts).hole(params["mount_hole"])
+result = MechanicalBuilder.prismatic_plate(
+    length=params["length"],
+    width=params["width"],
+    thickness=params["thickness"],
+    center_bore=params["center_bore"],
+    bolt_pattern={"spacing_x": params["hole_spacing"], "spacing_y": params["hole_spacing"], "dia": params["mount_hole"]}
 )
-"""
+'''
+    _, telemetry = compile_stl(fallback, session_id)
+    timings["total_ms"] = int((time.monotonic() - t0) * 1000)
+    return {"code": fallback, "telemetry": telemetry, "source": "fallback", "timings": timings}
