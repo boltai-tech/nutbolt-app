@@ -293,8 +293,7 @@ export default function Studio() {
             <Sparkles size={15} />{busy ? "SYNTHESIZING SOLID..." : "SYNTHESIZE SOLID"}
           </button>
 
-          <div className="chips">
-            <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", margin: "10px 0 6px 0" }}>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", margin: "10px 0 6px 0" }}>
             <span style={{ fontSize: "11px", color: "#64748b", alignSelf: "center", marginRight: "2px" }}>PRESETS:</span>
             {[
               ["⚙️ 14T Gear Rack (40mm)", "Linear gear rack: 14 teeth, module 0.91, 5mm base height, 15mm width"],
@@ -320,7 +319,9 @@ export default function Studio() {
               </button>
             ))}
           </div>
-          {history.map((h) => (
+
+          <div className="chips">
+            {history.map((h) => (
               <span key={h} className="chip" style={{ cursor: "pointer" }} onClick={() => { setPrompt(h); generate(h); }}>
                 {h.slice(0, 28)}{h.length > 28 ? "..." : ""}
               </span>
@@ -553,4 +554,3 @@ export default function Studio() {
     </div>
   );
 }
-
