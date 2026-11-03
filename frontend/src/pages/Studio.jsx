@@ -294,7 +294,33 @@ export default function Studio() {
           </button>
 
           <div className="chips">
-            {history.map((h) => (
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", margin: "10px 0 6px 0" }}>
+            <span style={{ fontSize: "11px", color: "#64748b", alignSelf: "center", marginRight: "2px" }}>PRESETS:</span>
+            {[
+              ["⚙️ 14T Gear Rack (40mm)", "Linear gear rack: 14 teeth, module 0.91, 5mm base height, 15mm width"],
+              ["⚙️ 15T Meshing Gear", "Spur gear: 15 teeth, module 0.91, 15mm face height, 5mm shaft bore"],
+              ["🔩 GT2 Pulley (20T)", "GT2 timing pulley with 20 teeth, 5mm shaft bore, and 7mm belt width"],
+              ["📐 L-Bracket", "L-shaped mounting bracket 50 wide, 60 base, 50 tall, 5 thick, two 6 mm base holes"]
+            ].map(([lbl, val]) => (
+              <button
+                key={lbl}
+                type="button"
+                style={{
+                  background: "rgba(0, 240, 255, 0.08)",
+                  border: "1px solid rgba(0, 240, 255, 0.28)",
+                  color: "#00f0ff",
+                  padding: "3px 8px",
+                  borderRadius: "999px",
+                  fontSize: "11px",
+                  cursor: "pointer"
+                }}
+                onClick={() => { setPrompt(val); generate(val); }}
+              >
+                {lbl}
+              </button>
+            ))}
+          </div>
+          {history.map((h) => (
               <span key={h} className="chip" style={{ cursor: "pointer" }} onClick={() => { setPrompt(h); generate(h); }}>
                 {h.slice(0, 28)}{h.length > 28 ? "..." : ""}
               </span>
@@ -527,3 +553,4 @@ export default function Studio() {
     </div>
   );
 }
+

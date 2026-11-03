@@ -3,6 +3,8 @@ import { Link, useNavigate } from "react-router-dom";
 import { Sparkles, ArrowRight, Box, SlidersHorizontal, Download } from "lucide-react";
 
 const EXAMPLES = [
+  "Linear gear rack: 14 teeth, module 0.91, 5mm base height, 15mm width",
+  "Spur gear: 15 teeth, module 0.91, 15mm face height, 5mm shaft bore",
   "L-shaped mounting bracket 50 wide, 60 base, 50 tall, 5 thick, two 6 mm base holes",
   "GT2 timing pulley 20 teeth 5 mm bore",
   "NEMA 17 motor mount plate",
@@ -187,3 +189,4 @@ export default function Home() {
     </div>
   );
 }
+
