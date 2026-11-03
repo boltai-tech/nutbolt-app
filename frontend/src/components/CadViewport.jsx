@@ -13,6 +13,8 @@ export const MATERIALS = {
   copper: { name: "Polished Copper", color: "#b85d38", metalness: 0.95, roughness: 0.25 },
 };
 
+export const MATERIAL_ORDER = ['steel', 'aluminum', 'brass', 'copper'];
+
 export default function CadViewport({ stlUrl, stepUrl, busy }) {
   const mount = useRef(null);
   const S = useRef({});
@@ -266,3 +268,5 @@ export default function CadViewport({ stlUrl, stepUrl, busy }) {
     </div>
   );
 }
+
+
