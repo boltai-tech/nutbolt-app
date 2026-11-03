@@ -104,7 +104,7 @@ def tslot_cutter_points(side, cx, cy):
 
 # --- CATALOG IMPLEMENTATIONS ---
 
-def gear_rack(module=0.91, teeth=14, base_height=5.0, face_width=15.0, pressure_angle=20.0):
+def gear_rack(module=0.91, teeth=70, base_height=5.0, face_width=15.0, pressure_angle=20.0):
     m = _num(module, "module", 0.2, 20.0)
     n = _int(teeth, "teeth", 4, 100)
     hb = _num(base_height, "base_height", 1.0, 200.0)
@@ -169,7 +169,7 @@ def gt2_pulley(teeth=20, bore=5.0, belt_width=6.0, hub_height=7.0):
     body = _fuse(_wp(teeth_prism), parts)
     return _cut(body, [_cyl(bore / 2.0, 2 * ft + bw + hub_h + 2.0, 0, 0, -1.0, (0, 0, 1))])
 
-def spur_gear(module=2.0, teeth=20, thickness=10.0, bore=8.0):
+def spur_gear(module=0.91, teeth=15, thickness=15.0, bore=5.0):
     m = _num(module, "module", 0.2, 12.0)
     n = _int(teeth, "teeth", 10, 120)
     t = _num(thickness, "thickness", 1.0, 200.0)
@@ -237,7 +237,7 @@ def heatsink(base_w=60.0, base_t=4.0, fin_h=25.0, fins=10, fin_t=2.0, length=40.
     return cq.Workplane("XZ").polyline(heatsink_profile(bw, bt, fh, n, ft)).close().extrude(L / 2.0, both=True)
 
 TEMPLATES = {
-    "gear_rack": (gear_rack, {"module": 0.91, "teeth": 14, "base_height": 5.0, "face_width": 15.0}),
+    "gear_rack": (gear_rack, {"module": 0.91, "teeth": 70, "base_height": 5.0, "face_width": 15.0}),
     "spur_gear": (spur_gear, {"module": 0.91, "teeth": 15, "thickness": 15.0, "bore": 5.0}),
     "tslot_extrusion": (tslot_extrusion, {"profile_w": 20.0, "profile_h": 20.0, "length": 500.0}),
     "gt2_pulley": (gt2_pulley, {"teeth": 20, "bore": 5.0, "belt_width": 6.0, "hub_height": 7.0}),
@@ -370,3 +370,4 @@ def build_system_prompt():
         "Rules: first statement `params = {...}`. Last statement `result = catalog.<name>(...)` or `result = mb.<archetype>(...)`.\n\n"
         + API_SPEC
     )
+

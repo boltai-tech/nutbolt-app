@@ -304,7 +304,7 @@ export default function Studio() {
           <div style={{ display: "flex", flexWrap: "wrap", gap: "6px", margin: "10px 0 6px 0" }}>
             <span style={{ fontSize: "11px", color: "#64748b", alignSelf: "center", marginRight: "2px" }}>PRESETS:</span>
             {[
-              ["⚙️ 14T Gear Rack (40mm)", "Linear gear rack: 14 teeth, module 0.91, 5mm base height, 15mm width"],
+              ["⚙️ 70T Gear Rack (20cm)", "Linear gear rack: 70 teeth, module 0.91, 5mm base height, 15mm width"],
               ["⚙️ 15T Meshing Gear", "Spur gear: 15 teeth, module 0.91, 15mm face height, 5mm shaft bore"],
               ["🔩 GT2 Pulley (20T)", "GT2 timing pulley with 20 teeth, 5mm shaft bore, and 7mm belt width"],
               ["📐 L-Bracket", "L-shaped mounting bracket 50 wide, 60 base, 50 tall, 5 thick, two 6 mm base holes"]
@@ -562,5 +562,6 @@ export default function Studio() {
     </div>
   );
 }
+
 
 
