@@ -1,9 +1,17 @@
 ﻿import { useEffect, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import { Sparkles, Copy, Check, SlidersHorizontal, Code, Scale, Zap, X, ShieldCheck } from "lucide-react";
-import CadViewport, { MATERIALS, MATERIAL_ORDER } from "../components/CadViewport.jsx";
+import CadViewport, { MATERIALS as IMPORTED_MATERIALS, MATERIAL_ORDER as IMPORTED_ORDER } from "../components/CadViewport.jsx";
 
-const API = import.meta.env.VITE_API_URL || "https://nutbolt-backend.onrender.com";
+const MATERIALS = IMPORTED_MATERIALS || {
+  steel: { name: "A36 Steel", density: 7.85, usdPerKg: 1.20 },
+  aluminum: { name: "6061 Aluminum", density: 2.70, usdPerKg: 3.50 },
+  brass: { name: "C360 Brass", density: 8.50, usdPerKg: 7.20 },
+  copper: { name: "Polished Copper", density: 8.96, usdPerKg: 9.80 }
+};
+const MATERIAL_ORDER = IMPORTED_ORDER || Object.keys(MATERIALS);
+
+const API = "https://nutbolt-backend.onrender.com";
 const FX_FALLBACK_INR = 88.0;
 
 const ICON = { params: SlidersHorizontal, code: Code, mass: Scale };
@@ -554,3 +562,5 @@ export default function Studio() {
     </div>
   );
 }
+
+
