@@ -236,7 +236,120 @@ def heatsink(base_w=60.0, base_t=4.0, fin_h=25.0, fins=10, fin_t=2.0, length=40.
     L = _num(length, "length", 5.0, 400.0)
     return cq.Workplane("XZ").polyline(heatsink_profile(bw, bt, fh, n, ft)).close().extrude(L / 2.0, both=True)
 
+
+# --- RS-775 50L/MIN CENTRIFUGAL WATER PUMP SUITE ---
+
+def rs775_pump_housing(chamber_dia=52.0, chamber_depth=18.0, wall=3.0, outlet_od=12.0, outlet_id=8.0):
+    cd = _num(chamber_dia, "chamber_dia", 30.0, 100.0)
+    ch = _num(chamber_depth, "chamber_depth", 10.0, 50.0)
+    w = _num(wall, "wall", 2.0, 8.0)
+    ood = _num(outlet_od, "outlet_od", 6.0, 25.0)
+    oid = min(_num(outlet_id, "outlet_id", 3.0, ood - 2.0), ood - 1.5)
+    
+    # Outer body and chamber cavity
+    od = cd + 2 * w
+    base_t = 4.0
+    total_h = ch + base_t
+    outer = cq.Workplane("XY").cylinder(total_h, od / 2.0, centered=(True, True, False))
+    cavity = cq.Solid.makeCylinder(cd / 2.0, ch + 2.0, V(0, 0, base_t), V(0, 0, 1))
+    
+    # RS-775 motor pilot boss (17.5mm), shaft bore (7mm), and 2x M4 motor mount holes (29mm PCD)
+    boss_hole = cq.Solid.makeCylinder(17.8 / 2.0, base_t + 2.0, V(0, 0, -1.0), V(0, 0, 1))
+    shaft_seal = cq.Solid.makeCylinder(9.0 / 2.0, base_t + 2.0, V(0, 0, -1.0), V(0, 0, 1))
+    
+    m_holes = [
+        cq.Solid.makeCylinder(4.4 / 2.0, base_t + 2.0, V(14.5, 0, -1.0), V(0, 0, 1)),
+        cq.Solid.makeCylinder(4.4 / 2.0, base_t + 2.0, V(-14.5, 0, -1.0), V(0, 0, 1))
+    ]
+    
+    # 4x M3 perimeter mounting holes for the front cover
+    flange_holes = []
+    pcd = od - 3.5
+    for ang in (45, 135, 225, 315):
+        rad = math.radians(ang)
+        x = (pcd / 2.0) * math.cos(rad)
+        y = (pcd / 2.0) * math.sin(rad)
+        flange_holes.append(cq.Solid.makeCylinder(3.2 / 2.0, total_h + 2.0, V(x, y, -1.0), V(0, 0, 1)))
+
+    # Tangential discharge outlet pipe
+    pipe_len = 22.0
+    tangent_y = cd / 2.0 - ood / 2.0 + 1.0
+    pipe_outer = cq.Solid.makeCylinder(ood / 2.0, pipe_len + od / 2.0, V(0, tangent_y, base_t + ch / 2.0), V(1, 0, 0))
+    pipe_bore = cq.Solid.makeCylinder(oid / 2.0, pipe_len + od + 4.0, V(-2.0, tangent_y, base_t + ch / 2.0), V(1, 0, 0))
+
+    body = _fuse(outer, [pipe_outer])
+    tools = [cavity, boss_hole, shaft_seal, pipe_bore] + m_holes + flange_holes
+    return _cut(body, tools)
+
+
+def rs775_pump_impeller(diameter=46.0, height=14.0, bore=5.0, vanes=6, base_t=2.5):
+    d = _num(diameter, "diameter", 20.0, 95.0)
+    h = _num(height, "height", 6.0, 40.0)
+    b = _num(bore, "bore", 2.0, 12.0)
+    n = _int(vanes, "vanes", 3, 12)
+    bt = _num(base_t, "base_t", 1.5, 6.0)
+    
+    # Base disk and central drive hub
+    base_plate = cq.Workplane("XY").cylinder(bt, d / 2.0, centered=(True, True, False))
+    hub_d = max(b + 5.0, 11.0)
+    hub = cq.Solid.makeCylinder(hub_d / 2.0, h, V(0, 0, 0), V(0, 0, 1))
+    
+    # Curved impeller vanes
+    v_thickness = 2.0
+    blade_h = h - bt
+    v_parts = []
+    r_inner = hub_d / 2.0 + 0.5
+    r_outer = d / 2.0 - 0.5
+    
+    for i in range(n):
+        ang = 2.0 * math.pi * i / n
+        pts = []
+        steps = 10
+        for s in range(steps + 1):
+            t = s / float(steps)
+            curr_r = r_inner + (r_outer - r_inner) * t
+            curve_ang = ang + (0.55 * t * t)
+            pts.append((curr_r * math.cos(curve_ang), curr_r * math.sin(curve_ang)))
+        for s in reversed(range(steps + 1)):
+            t = s / float(steps)
+            curr_r = r_inner + (r_outer - r_inner) * t
+            curve_ang = ang + (0.55 * t * t) + (v_thickness / curr_r)
+            pts.append((curr_r * math.cos(curve_ang), curr_r * math.sin(curve_ang)))
+            
+        blade = (cq.Workplane("XY").workplane(offset=bt)
+                 .polyline(pts).close().extrude(blade_h)).val()
+        v_parts.append(blade)
+        
+    solid = _fuse(base_plate, [hub] + v_parts)
+    # Shaft bore hole
+    return _cut(solid, [_cyl(b / 2.0, h + 4.0, 0, 0, -2.0, (0, 0, 1))])
+
+
+def rs775_pump_cap(outer_dia=58.0, thickness=3.0, inlet_od=14.0, inlet_id=10.0, inlet_len=22.0):
+    od = _num(outer_dia, "outer_dia", 35.0, 110.0)
+    t = _num(thickness, "thickness", 2.0, 8.0)
+    iod = _num(inlet_od, "inlet_od", 6.0, 30.0)
+    iid = min(_num(inlet_id, "inlet_id", 3.0, iod - 2.0), iod - 1.5)
+    L = _num(inlet_len, "inlet_len", 8.0, 50.0)
+    
+    cap_disk = cq.Workplane("XY").cylinder(t, od / 2.0, centered=(True, True, False))
+    pipe = cq.Solid.makeCylinder(iod / 2.0, L, V(0, 0, t), V(0, 0, 1))
+    pipe_bore = cq.Solid.makeCylinder(iid / 2.0, L + t + 2.0, V(0, 0, -1.0), V(0, 0, 1))
+    
+    flange_holes = []
+    pcd = od - 5.5
+    for ang in (45, 135, 225, 315):
+        rad = math.radians(ang)
+        x = (pcd / 2.0) * math.cos(rad)
+        y = (pcd / 2.0) * math.sin(rad)
+        flange_holes.append(cq.Solid.makeCylinder(3.2 / 2.0, t + 2.0, V(x, y, -1.0), V(0, 0, 1)))
+        
+    body = _fuse(cap_disk, [pipe])
+    return _cut(body, [pipe_bore] + flange_holes)
 TEMPLATES = {
+    "rs775_pump_housing": (rs775_pump_housing, {"chamber_dia": 52.0, "chamber_depth": 18.0, "wall": 3.0, "outlet_od": 12.0, "outlet_id": 8.0}),
+    "rs775_pump_impeller": (rs775_pump_impeller, {"diameter": 46.0, "height": 14.0, "bore": 5.0, "vanes": 6, "base_t": 2.5}),
+    "rs775_pump_cap": (rs775_pump_cap, {"outer_dia": 58.0, "thickness": 3.0, "inlet_od": 14.0, "inlet_id": 10.0, "inlet_len": 22.0}),
     "gear_rack": (gear_rack, {"module": 0.91, "teeth": 70, "base_height": 5.0, "face_width": 15.0}),
     "spur_gear": (spur_gear, {"module": 0.91, "teeth": 15, "thickness": 15.0, "bore": 5.0}),
     "tslot_extrusion": (tslot_extrusion, {"profile_w": 20.0, "profile_h": 20.0, "length": 500.0}),
@@ -370,4 +483,5 @@ def build_system_prompt():
         "Rules: first statement `params = {...}`. Last statement `result = catalog.<name>(...)` or `result = mb.<archetype>(...)`.\n\n"
         + API_SPEC
     )
+
 
